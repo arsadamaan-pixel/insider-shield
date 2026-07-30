@@ -30,6 +30,7 @@ export interface IncomingHeartbeat {
   platform: { os: string; arch: string };
   status: string;
   orgKey?: string;
+  employeeEmail?: string;
 }
 
 export function isValidDlpEvent(body: unknown): body is IncomingDlpEvent {
@@ -88,13 +89,25 @@ export async function ingestDlpEvent(payload: IncomingDlpEvent): Promise<DlpAler
   };
 }
 
-export async function ingestHeartbeat(payload: IncomingHeartbeat): Promise<void> {
+export async function ingestHeartbeat(payload: IncomingHeartbeat, meta?: { ipAddress?: string }): Promise<void> {
   await prisma.heartbeat.create({
     data: {
       orgKey: payload.orgKey ?? "unknown",
+      employeeEmail: payload.employeeEmail,
+      ipAddress: meta?.ipAddress,
       platform: JSON.stringify(payload.platform),
       timestamp: new Date(payload.ts),
       status: payload.status,
     },
   });
+
+  if (payload.employeeEmail) {
+    // updateMany, not update — an unrecognized/mistyped email (plausible,
+    // since the extension's local-dev identity field is free text) must
+    // silently match zero rows instead of throwing.
+    await prisma.employee.updateMany({
+      where: { email: payload.employeeEmail },
+      data: { lastSeenAt: new Date(payload.ts), lastKnownIp: meta?.ipAddress },
+    });
+  }
 }

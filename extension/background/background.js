@@ -77,6 +77,20 @@ async function getOrgKey() {
   return devOrgKey;
 }
 
+// Unlike getOrgKey(), there is NO anonymous fallback here — a fake
+// identity would defeat the point of per-employee session targeting.
+// Managed policy (enterprise deployment) wins; the options page's local
+// storage field (see extension/options/options.js) is the local-dev
+// fallback, matching the orgKey precedent. Returns undefined if unset,
+// in which case this connection is simply not employee-attributed.
+async function getEmployeeEmail() {
+  const managed = await readManagedStorage();
+  if (managed.employeeEmail) return managed.employeeEmail;
+
+  const local = await readLocalStorage(["employeeEmail"]);
+  return local.employeeEmail || undefined;
+}
+
 // --- WebSocket client -------------------------------------------------
 // Connects to the real-time transport server (server.ts) at wsEndpoint,
 // identifying itself as an agent-role connection via ?role=agent so the
@@ -88,6 +102,7 @@ const wsClient = {
   reconnectAttempts: 0,
   heartbeatTimer: null,
   eventBuffer: [], // bounded ring buffer, drained on send, cleared on reconnect
+  employeeEmail: undefined, // set from getEmployeeEmail() at each connect attempt
 };
 
 const MAX_BUFFERED_EVENTS = 50;
@@ -112,8 +127,10 @@ async function connectWebSocket(policy) {
 
   wsClient.state = "connecting";
   try {
+    wsClient.employeeEmail = await getEmployeeEmail();
     const url = new URL(effectivePolicy.wsEndpoint);
     url.searchParams.set("role", "agent");
+    if (wsClient.employeeEmail) url.searchParams.set("employeeEmail", wsClient.employeeEmail);
     wsClient.socket = new WebSocket(url.toString());
   } catch (err) {
     console.warn("[Insider-Shield] failed to construct WebSocket:", err);
@@ -153,6 +170,7 @@ function startHeartbeat(policy) {
       ts: Date.now(),
       platform,
       status: wsClient.state,
+      employeeEmail: wsClient.employeeEmail,
     });
   }, policy.heartbeatIntervalMs);
 }
@@ -196,6 +214,19 @@ function handleRemoteMessage(event) {
     console.warn("[Insider-Shield] ignored non-JSON remote message.");
     return;
   }
+
+  if (parsed.type === "terminate_session") {
+    // Deliberately minimal: log and close. The durable block is the
+    // server's WS-upgrade-time status gate (server.ts) — a revoked
+    // employee's reconnect attempts get rejected there, not here. No
+    // local "stop retrying" flag is set, so scheduleReconnect() will
+    // keep retrying on its normal backoff (same as against any other
+    // sustained rejection) — a known, accepted limitation for now.
+    console.log("[Insider-Shield] session terminated by server:", parsed.reason || "(no reason given)");
+    if (wsClient.socket) wsClient.socket.close(4001, "server_terminated");
+    return;
+  }
+
   if (parsed.type !== "policy_update" || typeof parsed.policy !== "object" || parsed.policy === null) {
     return;
   }
@@ -225,6 +256,7 @@ async function handleDlpEvent(message) {
     ts: message.ts,
     ruleName: message.ruleName,
     excerptRedacted: message.excerptRedacted,
+    employeeEmail: wsClient.employeeEmail,
   };
 
   if (!policy.dlpEnabled) {
@@ -252,7 +284,13 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "managed" || (areaName === "local" && changes.policy)) {
+  if (areaName === "managed" || (areaName === "local" && (changes.policy || changes.employeeEmail))) {
+    // An employeeEmail change (e.g. saved via the options page) means
+    // the current connection, if any, is under the wrong identity —
+    // drop it so connectWebSocket() re-establishes with the new one.
+    if (changes.employeeEmail && wsClient.socket) {
+      wsClient.socket.close(4000, "identity_changed");
+    }
     getEffectivePolicy().then((policy) => {
       console.log("[Insider-Shield] policy changed; re-evaluating connection:", policy);
       if (policy.transmitEvents && wsClient.state !== "open" && wsClient.state !== "connecting") {

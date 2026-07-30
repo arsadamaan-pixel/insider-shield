@@ -3,7 +3,9 @@ import next from "next";
 import { WebSocket, WebSocketServer } from "ws";
 import { ingestDlpEvent, ingestHeartbeat, isValidDlpEvent, isValidHeartbeat } from "@/lib/telemetryIngest";
 import { sanitizePolicyUpdate, setPolicy } from "@/lib/policyStore";
-import type { ServerToAgentMessage, ServerToDashboardMessage, WsRole } from "@/types";
+import { prisma } from "@/lib/prisma";
+import { agentSockets, dashboardSockets, broadcast, registerConnection } from "@/lib/wsRegistry";
+import type { WsRole } from "@/types";
 
 // Custom server wrapping the Next.js App Router so a long-lived `ws`
 // WebSocket server can share the same port at /api/ws — standard Next.js
@@ -24,19 +26,12 @@ const port = Number(process.env.PORT) || 3000;
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
-const agentSockets = new Set<WebSocket>();
-const dashboardSockets = new Set<WebSocket>();
-
-function broadcast(sockets: Set<WebSocket>, message: ServerToDashboardMessage | ServerToAgentMessage) {
-  const json = JSON.stringify(message);
-  for (const socket of sockets) {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(json);
-    }
-  }
+interface AgentIdentity {
+  employeeEmail?: string;
+  ipAddress?: string;
 }
 
-async function handleAgentMessage(raw: WebSocket.RawData) {
+async function handleAgentMessage(raw: WebSocket.RawData, identity: AgentIdentity) {
   let payload: unknown;
   try {
     payload = JSON.parse(raw.toString());
@@ -44,14 +39,20 @@ async function handleAgentMessage(raw: WebSocket.RawData) {
     return;
   }
 
+  // Connection-level identity (established at handshake) wins over
+  // anything a payload itself claims — a message can't assert a
+  // different identity mid-connection than what it authenticated with.
   if (isValidDlpEvent(payload)) {
-    const alert = await ingestDlpEvent(payload);
+    const alert = await ingestDlpEvent({ ...payload, employeeEmail: identity.employeeEmail ?? payload.employeeEmail });
     broadcast(dashboardSockets, { type: "dlp_alert", alert });
     return;
   }
 
   if (isValidHeartbeat(payload)) {
-    await ingestHeartbeat(payload);
+    await ingestHeartbeat(
+      { ...payload, employeeEmail: identity.employeeEmail ?? payload.employeeEmail },
+      { ipAddress: identity.ipAddress }
+    );
   }
 }
 
@@ -80,29 +81,12 @@ async function handleDashboardMessage(raw: WebSocket.RawData) {
 
 const wss = new WebSocketServer({ noServer: true });
 
-function registerConnection(ws: WebSocket, role: WsRole) {
-  const sockets = role === "agent" ? agentSockets : dashboardSockets;
-  sockets.add(ws);
-
-  ws.on("message", (raw) => {
-    const handler = role === "agent" ? handleAgentMessage(raw) : handleDashboardMessage(raw);
-    handler.catch((err) => console.error(`[ws] error handling ${role} message:`, err));
-  });
-
-  ws.on("close", () => {
-    agentSockets.delete(ws);
-    dashboardSockets.delete(ws);
-  });
-
-  ws.on("error", (err) => console.warn(`[ws] ${role} socket error:`, err));
-}
-
 app.prepare().then(() => {
   const server = createServer((req, res) => {
     handle(req, res);
   });
 
-  server.on("upgrade", (req, socket, head) => {
+  server.on("upgrade", async (req, socket, head) => {
     const { pathname, searchParams } = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
     if (pathname !== "/api/ws") {
@@ -111,15 +95,37 @@ app.prepare().then(() => {
       return;
     }
 
-    const role = searchParams.get("role");
+    const role = searchParams.get("role") as WsRole | null;
     if (role !== "agent" && role !== "dashboard") {
       socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
       socket.destroy();
       return;
     }
 
+    const employeeEmail = role === "agent" ? (searchParams.get("employeeEmail") ?? undefined) : undefined;
+    const ipAddress = req.socket.remoteAddress ?? undefined;
+
+    // Reject reconnects for an employee whose access has been revoked —
+    // without this, terminateEmployeeSessions() only delays reconnection
+    // by one backoff cycle instead of actually blocking it.
+    if (employeeEmail) {
+      const employee = await prisma.employee.findUnique({ where: { email: employeeEmail } });
+      if (employee && employee.status !== "active") {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    }
+
     wss.handleUpgrade(req, socket, head, (ws) => {
-      registerConnection(ws, role);
+      registerConnection(ws, role, { employeeEmail, ipAddress });
+
+      ws.on("message", (raw) => {
+        const handler = role === "agent" ? handleAgentMessage(raw, { employeeEmail, ipAddress }) : handleDashboardMessage(raw);
+        handler.catch((err) => console.error(`[ws] error handling ${role} message:`, err));
+      });
+
+      ws.on("error", (err) => console.warn(`[ws] ${role} socket error:`, err));
     });
   });
 

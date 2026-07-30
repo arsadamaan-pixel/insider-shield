@@ -118,18 +118,66 @@ milestone status.
   single-tenant org, consistent with the rest of the app having no
   auth yet.
 
-### Phase 4 — Detection, Geo-Compliance & Dashboard UX — ⏳ PENDING
+### Phase 4 — Detection, Geo-Compliance & Dashboard UX — 🔄 IN PROGRESS
+- [x] **IAM Users page — COMPLETE.** `src/app/users/page.tsx` migrated
+      off `mockData.ts` onto real `prisma.employee.findMany()` data.
+      New `src/components/users/EmployeeTable.tsx` (status/risk badges,
+      last-seen column) and `src/components/users/OffboardModal.tsx`
+      (the first modal/dialog in this codebase) implement a "1-Click
+      Offboard / Revoke Key" action: `POST
+      /api/employees/[id]/revoke` sets `status: "offboarded"` +
+      `offboardedAt`, then force-terminates that employee's live
+      WebSocket session(s) via `src/lib/wsRegistry.ts`'s
+      `terminateEmployeeSessions()`.
+- [x] **Employee identity plumbing — added to make the above real, not
+      cosmetic.** The extension previously sent zero identity with its
+      WebSocket connection (see the Phase 3 "org-identity gap" note,
+      now partially closed). `extension/background/background.js` gained
+      `getEmployeeEmail()` (managed-storage-first, no anonymous
+      fallback — unlike `getOrgKey()`) plus a manual-entry field on the
+      previously-blank `extension/options/options.html`/new
+      `options.js`. Heartbeats/DLP events now carry `employeeEmail`;
+      `server.ts`'s WS upgrade handler reads it, looks up the employee,
+      and **rejects (403) reconnects for any non-active employee** —
+      without this, a revoked employee's extension would just
+      reconnect within its normal backoff. `src/lib/telemetryIngest.ts`'s
+      `ingestHeartbeat()` now denormalizes `lastSeenAt`/`lastKnownIp`
+      onto the `Employee` row on every real heartbeat.
+- [x] **Geo-Compliance Asset Map — COMPLETE.** `src/app/assets/page.tsx`
+      migrated off `mockData.ts`. New `src/lib/geo.ts` formalizes the
+      old ad-hoc mock-city logic into a reusable `geoForEmployee()`
+      helper (deterministic per-employee position — not a live IP→geo
+      lookup, see `WORKLOG.md` for why). `leaflet`/`react-leaflet`
+      integrated via `src/components/assets/LeafletMap.tsx`
+      (`"use client"`) behind `src/components/assets/AssetMap.tsx`'s
+      `next/dynamic(...,{ssr:false})` wrapper (required — Leaflet
+      touches `window`/`document` at import time). Markers are
+      `CircleMarker`s colored green/red by compliance, computed from
+      real data (`DlpAlert.geoViolation` + `acknowledged`), not a
+      synthetic flag. Side panel
+      (`src/components/assets/AssetDetailPanel.tsx`) shows OS/IP/last
+      heartbeat/compliance per endpoint.
 - [ ] Rule-based anomaly detection on ingested events.
-- [ ] Interactive asset map (Leaflet / React-Leaflet) with GeoIP helpers.
 - [ ] Fuller Policies UI for remote OTA rule authoring/distribution —
       `sensitivePatterns` and `wsEndpoint` editing, plus an audit trail.
       The minimal Policy Control Panel added in Phase 3 covers
       `dlpEnabled`/`transmitEvents`/`heartbeatIntervalMs` only.
 - [ ] Charts/analytics on the dashboard overview (Recharts).
-- [ ] Migrate `users/` and `assets/` placeholder pages off `mockData.ts`
-      onto the same Prisma queries `page.tsx`/`policies/` now use (out
-      of scope for the SQLite persistence task, left on mock data for
-      now — they still render correctly, just not from the DB).
+- Schema migration `employee_identity_and_lifecycle_fields`: added
+  `Employee.title`/`managedDeviceId` (unique)/`lastSeenAt`/`lastKnownIp`/
+  `offboardedAt`, and `Heartbeat.employeeEmail`/`ipAddress`. Added
+  `leaflet`, `react-leaflet`, `@types/leaflet` as dependencies.
+- Note carried forward: the extension org-identity gap is only
+  *partially* closed — `employeeEmail` is now wired end-to-end, but
+  `getOrgKey()` (true org/tenant identity, vs. one specific employee)
+  remains dead code, and there's still no real authentication on who
+  can call the revoke endpoint or set an extension's `employeeEmail` —
+  both are Phase 5 territory. The revoke flow's durable enforcement is
+  the WS-upgrade-time 403 gate; the `terminate_session` message the
+  extension receives is a courtesy notice only, and deliberately does
+  **not** set a local "stop reconnecting" flag (it'll keep retrying on
+  its normal backoff against the 403, same as any other sustained
+  rejection) — see `WORKLOG.md` for the reasoning.
 
 ### Phase 5 — Hardening, Compliance & Deployment — ⏳ PENDING
 - [ ] Authentication/authorization for the dashboard and API.
@@ -139,8 +187,10 @@ milestone status.
 
 ## Active Milestone
 
-**Phase 3 — Dashboard & Ingestion Foundation is now COMPLETE** as of
-2026-07-30: dashboard UI, the two ingestion API routes, SQLite
-persistence, and the real-time WebSocket transport are all done (see
-Phase 3 checklist above). Phase 1 and Phase 2 are complete. Phase 4
-(Detection, Geo-Compliance & Dashboard UX) is next.
+**Phase 4 — Detection, Geo-Compliance & Dashboard UX** is in progress as
+of 2026-07-30. The IAM Users page (with a real offboard/revoke action)
+and the Geo-Compliance Asset Map are both complete, along with the
+employee-identity plumbing needed to make revoke genuinely per-employee.
+Rule-based anomaly detection, the fuller Policies UI, and dashboard
+charts/analytics remain open (see Phase 4 checklist above). Phases 1–3
+are complete.

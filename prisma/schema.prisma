@@ -11,13 +11,23 @@ datasource db {
 }
 
 model Employee {
-  id         String   @id @default(cuid())
-  name       String
-  email      String   @unique
-  department String
-  riskScore  Int
-  status     String // "active" | "suspended" | "offboarded"
-  createdAt  DateTime @default(now())
+  id              String    @id @default(cuid())
+  name            String
+  email           String    @unique
+  department      String
+  riskScore       Int
+  status          String // "active" | "suspended" | "offboarded"
+  createdAt       DateTime  @default(now())
+  title           String?
+  // The device an employee's extension is bound to. Unique so two
+  // employees can never claim the same device; nullable+unique is safe
+  // in SQLite (NULLs never collide).
+  managedDeviceId String?   @unique
+  // Bumped by ingestHeartbeat() whenever a heartbeat carries a matching
+  // employeeEmail — see src/lib/telemetryIngest.ts.
+  lastSeenAt      DateTime?
+  lastKnownIp     String?
+  offboardedAt    DateTime?
 }
 
 // `snippet` and `redactedContent` are both always pre-redacted values
@@ -52,9 +62,16 @@ model SystemPolicy {
 }
 
 model Heartbeat {
-  id        String   @id @default(cuid())
-  orgKey    String
-  platform  String // JSON-encoded { os, arch }
-  timestamp DateTime @default(now())
-  status    String
+  id            String   @id @default(cuid())
+  orgKey        String
+  // Set when the sending agent's connection carried a recognized
+  // employeeEmail — see server.ts's WS upgrade handler and
+  // src/lib/telemetryIngest.ts's ingestHeartbeat().
+  employeeEmail String?
+  ipAddress     String?
+  platform      String // JSON-encoded { os, arch }
+  timestamp     DateTime @default(now())
+  status        String
+
+  @@index([employeeEmail])
 }

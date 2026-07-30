@@ -34,14 +34,25 @@ async function main() {
   const mockAlerts = generateMockDlpAlerts(mockEmployees);
   const emailById = new Map(mockEmployees.map((e) => [e.id, e.email]));
 
+  // The first 10 device-bound employees get seeded heartbeats below —
+  // computed up front so their matching "most recent" IP can also be
+  // denormalized onto the Employee row itself, mirroring what
+  // ingestHeartbeat() does for real (non-seeded) heartbeats.
+  const boundEmployees = mockEmployees.filter((e) => e.managedDeviceId);
+  const latestIpByEmail = new Map(boundEmployees.slice(0, 10).map((e, i) => [e.email, `10.${(i % 254) + 1}.1.${(i % 254) + 1}`]));
+
   console.log(`[seed] inserting ${mockEmployees.length} employees...`);
   await prisma.employee.createMany({
     data: mockEmployees.map((e) => ({
       name: e.fullName,
       email: e.email,
       department: e.department,
+      title: e.title,
       riskScore: e.riskScore,
       status: e.status,
+      managedDeviceId: e.managedDeviceId,
+      lastSeenAt: new Date(e.lastSeenAt),
+      lastKnownIp: latestIpByEmail.get(e.email),
       createdAt: new Date(e.lastSeenAt),
     })),
   });
@@ -62,6 +73,26 @@ async function main() {
     })),
   });
 
+  // Guarantees at least one visible red (violation) marker on the Asset
+  // Map regardless of what the deterministic mock sequence above
+  // happened to produce — demo/dev-quality-of-life, not load-bearing.
+  const firstBoundEmployee = mockEmployees.find((e) => e.managedDeviceId);
+  if (firstBoundEmployee) {
+    await prisma.dlpAlert.create({
+      data: {
+        timestamp: new Date(),
+        severity: "critical",
+        employeeEmail: firstBoundEmployee.email,
+        ruleTriggered: "ssn_like",
+        snippet: `DLP rule "ssn_like" triggered on docs.google.com`,
+        redactedContent: "***-**-****",
+        sourceUrl: "docs.google.com",
+        geoViolation: true,
+        acknowledged: false,
+      },
+    });
+  }
+
   console.log("[seed] inserting default SystemPolicy key/value rows...");
   await prisma.systemPolicy.createMany({
     data: Object.entries(DEFAULT_POLICY).map(([key, value]) => ({
@@ -72,11 +103,20 @@ async function main() {
   });
 
   console.log("[seed] inserting sample heartbeats...");
-  const boundEmployees = mockEmployees.filter((e) => e.managedDeviceId);
+  const OS_SAMPLES = [
+    { os: "mac", arch: "arm64" },
+    { os: "win", arch: "x86-64" },
+    { os: "linux", arch: "x86-64" },
+  ];
   const heartbeats = boundEmployees.slice(0, 10).flatMap((e, i) =>
+    // j=0 is the most recent (smallest time offset) — its IP matches
+    // latestIpByEmail above, kept identical to what a real ingestHeartbeat()
+    // call would have denormalized onto the Employee row.
     Array.from({ length: 5 }, (_, j) => ({
-      orgKey: `dev-seed-${i}`,
-      platform: JSON.stringify({ os: "linux", arch: "x86-64" }),
+      orgKey: e.managedDeviceId ?? `dev-seed-${i}`,
+      employeeEmail: e.email,
+      ipAddress: j === 0 ? latestIpByEmail.get(e.email) : `10.${(i % 254) + 1}.${(j % 254) + 1}.${((i + j) % 254) + 1}`,
+      platform: JSON.stringify(OS_SAMPLES[i % OS_SAMPLES.length]),
       timestamp: new Date(Date.now() - j * 5 * 60 * 1000),
       status: "open",
     }))

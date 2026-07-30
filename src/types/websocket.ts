@@ -23,11 +23,20 @@ export interface PolicyUpdateRequestMessage {
   updatedBy?: string;
 }
 
+// Sent when an employee is offboarded/revoked — tells the agent to
+// close its connection. The server also enforces this at the WS
+// upgrade level (rejects reconnects for non-active employees), so this
+// message is a courtesy notice, not the sole enforcement mechanism.
+export interface TerminateSessionMessage {
+  type: "terminate_session";
+  reason?: string;
+}
+
 // Messages the server pushes to dashboard-role sockets.
 export type ServerToDashboardMessage = DlpAlertMessage | PolicyUpdateMessage;
 
 // Messages the server pushes to agent-role sockets.
-export type ServerToAgentMessage = PolicyUpdateMessage;
+export type ServerToAgentMessage = PolicyUpdateMessage | TerminateSessionMessage;
 
 // Messages a dashboard-role socket sends to the server.
 export type DashboardToServerMessage = PolicyUpdateRequestMessage;

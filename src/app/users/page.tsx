@@ -1,67 +1,44 @@
 import { Header } from "@/components/layout/Header";
-import { generateDashboardSnapshot } from "@/lib/mockData";
+import { EmployeeTable } from "@/components/users/EmployeeTable";
+import { prisma } from "@/lib/prisma";
+import { riskLevelFromScore } from "@/lib/risk";
+import type { EnrichedEmployee } from "@/types";
 
-const STATUS_STYLES: Record<string, string> = {
-  active: "bg-emerald-500/15 text-emerald-400",
-  suspended: "bg-amber-500/15 text-amber-400",
-  offboarded: "bg-slate-700/40 text-slate-400",
-};
+// Reads live employee state from SQLite (status changes via the
+// offboard/revoke action) — must not be frozen as a build-time snapshot.
+export const dynamic = "force-dynamic";
 
-const RISK_STYLES: Record<string, string> = {
-  low: "bg-slate-700/40 text-slate-300",
-  medium: "bg-amber-500/15 text-amber-400",
-  high: "bg-orange-500/15 text-orange-400",
-  critical: "bg-red-500/15 text-red-400",
-};
+async function loadEmployees(): Promise<EnrichedEmployee[]> {
+  const rows = await prisma.employee.findMany({ orderBy: { riskScore: "desc" } });
+  return rows.map((e) => ({
+    id: e.id,
+    name: e.name,
+    email: e.email,
+    department: e.department,
+    title: e.title,
+    riskScore: e.riskScore,
+    riskLevel: riskLevelFromScore(e.riskScore),
+    status: e.status as EnrichedEmployee["status"],
+    managedDeviceId: e.managedDeviceId,
+    lastSeenAt: e.lastSeenAt ? e.lastSeenAt.toISOString() : null,
+    lastKnownIp: e.lastKnownIp,
+    createdAt: e.createdAt.toISOString(),
+    offboardedAt: e.offboardedAt ? e.offboardedAt.toISOString() : null,
+  }));
+}
 
-// Placeholder listing view — full IAM lifecycle actions (suspend, offboard,
-// bind managed device) are Phase 4 work per PLAN.md.
-export default function UsersPage() {
-  const { employees, highSeverityAlertCount, riskScore } = generateDashboardSnapshot();
+export default async function UsersPage() {
+  const employees = await loadEmployees();
+  const highSeverityAlertCount = await prisma.dlpAlert.count({ where: { severity: { in: ["high", "critical"] } } });
+  const riskScore = employees.length
+    ? Math.round(employees.reduce((sum, e) => sum + e.riskScore, 0) / employees.length)
+    : 0;
 
   return (
     <div className="flex min-h-full flex-col">
       <Header title="IAM Employee Lifecycle Management" highSeverityAlertCount={highSeverityAlertCount} riskScore={riskScore} />
       <div className="p-6">
-        <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/60">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Department</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Risk</th>
-                <th className="px-4 py-2 font-medium">Device</th>
-                <th className="px-4 py-2 font-medium">Location</th>
-              </tr>
-            </thead>
-            <tbody>
-              {employees.map((employee) => (
-                <tr key={employee.id} className="border-t border-slate-800/60 text-slate-300">
-                  <td className="px-4 py-2">
-                    <div>{employee.fullName}</div>
-                    <div className="text-xs text-slate-500">{employee.title}</div>
-                  </td>
-                  <td className="px-4 py-2 text-slate-400">{employee.department}</td>
-                  <td className="px-4 py-2">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[employee.status]}`}>
-                      {employee.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RISK_STYLES[employee.riskLevel]}`}>
-                      {employee.riskLevel} ({employee.riskScore})
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-500">
-                    {employee.managedDeviceId ?? "unbound"}
-                  </td>
-                  <td className="px-4 py-2 text-slate-400">{employee.location.city}, {employee.location.country}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <EmployeeTable initialEmployees={employees} />
       </div>
     </div>
   );

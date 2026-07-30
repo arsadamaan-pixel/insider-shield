@@ -411,3 +411,182 @@
   Control Panel intentionally covers only 3 of 5 `SystemPolicy` fields.
 
 **Status: Phase 3 — Dashboard & Ingestion Foundation is now fully COMPLETE.** All of Phase 1–3 pushed and verified; Phase 4 (Detection, Geo-Compliance & Dashboard UX) is next.
+
+## 2026-07-30 — Phase 4: IAM Users & Geo-Compliance Asset Map
+
+- **Investigation before building anything**: the extension sent zero
+  identity with its WebSocket connection/telemetry (no `employeeEmail`
+  anywhere), so "force-terminate that specific user's session" wasn't
+  achievable as literally targeted. Confirmed with the user (rather than
+  silently picking): add real per-employee identity wiring (chosen) vs.
+  a DB-status-only + broadcast-to-everyone fallback. Also confirmed the
+  Asset Map's geo data source: a deterministic per-employee helper
+  (chosen) vs. a real IP→GeoIP lookup, which would need a new dependency
+  and show nothing useful for localhost/private IPs in local dev.
+- **Schema migration** `employee_identity_and_lifecycle_fields`
+  (`prisma migrate dev` doesn't support this sandbox's non-interactive
+  environment — generated the SQL via `prisma migrate diff
+  --from-migrations ... --to-schema ...`, wrote it into a manually-named
+  migration folder, applied with `prisma migrate deploy`, same as the
+  workaround used for the initial Phase 3 migration). Added to
+  `Employee`: `title`, `managedDeviceId` (now `@unique` — prevents two
+  employees ever claiming the same device), `lastSeenAt`, `lastKnownIp`,
+  `offboardedAt`. Added to `Heartbeat`: `employeeEmail`, `ipAddress`,
+  plus an index on `employeeEmail`.
+- `src/lib/geo.ts` (new) and `src/lib/risk.ts` (new): the mock-city
+  array, mulberry32 PRNG, and `riskLevelFromScore` were moved out of
+  `src/lib/mockData.ts` verbatim (confirmed via `grep` that the mock
+  `Employee` type — renamed `MockEmployee` — is used nowhere else, so
+  this was a pure, behavior-identical refactor; `policies/page.tsx`'s
+  unrelated use of `generateDashboardSnapshot()` for Header stats is
+  unaffected). `geo.ts` adds `geoForEmployee({id})`: a *new* function
+  seeding its own PRNG from a hash of the employee id, independent of
+  `mockData.ts`'s shared-sequence generator — deterministic per
+  employee, used by the real Prisma-backed Assets page.
+- `src/lib/wsRegistry.ts` (new): the `agentSockets`/`dashboardSockets`
+  registry and `broadcast()` helper were extracted out of `server.ts`
+  (which now only handles bootstrapping + protocol logic) so a plain
+  Next.js Route Handler — the new revoke endpoint — can import
+  `terminateEmployeeSessions(email)` directly without importing from the
+  process entrypoint. `globalThis`-cached (same pattern as
+  `src/lib/prisma.ts`) as a guard against `server.ts`'s `tsx` loader and
+  Next's own dev-mode bundler instantiating the module twice, which
+  would otherwise make the revoke route silently operate on an empty
+  registry that never saw a real connection — verified empirically (see
+  below) that this isn't happening, not just trusted blind.
+- **`server.ts`**: the WS upgrade handler now reads an optional
+  `employeeEmail` query param (agent connections only) and the real
+  connecting IP from `req.socket.remoteAddress`. **When present, looks
+  up the employee and rejects the upgrade (403) unless `status ===
+  "active"`** — without this, `terminateEmployeeSessions()` only delays
+  reconnection by one backoff cycle instead of actually blocking it, and
+  the whole revoke feature would be cosmetic. `handleAgentMessage` now
+  threads connection-level identity into `ingestHeartbeat`/
+  `ingestDlpEvent`, with the connection's authenticated identity always
+  winning over anything a payload itself claims.
+- `src/lib/telemetryIngest.ts`: `IncomingHeartbeat` gained an optional
+  `employeeEmail` (parallel to the existing `orgKey`). `ingestHeartbeat`
+  now also does a `prisma.employee.updateMany` (not `update` — an
+  unrecognized/mistyped email, plausible given the options-page field is
+  free text, must silently match zero rows, not throw) to denormalize
+  `lastSeenAt`/`lastKnownIp` onto the `Employee` row on every real
+  heartbeat. `IncomingDlpEvent`/`ingestDlpEvent` already had
+  `employeeEmail` fully wired from Phase 3 — only the extension needed
+  to start actually sending it.
+- `src/types/websocket.ts`: added `TerminateSessionMessage
+  {type:"terminate_session", reason?}`; `ServerToAgentMessage` is now a
+  2-member union.
+- `extension/background/background.js`: new `getEmployeeEmail()`
+  (managed → local, **no anonymous fallback** — unlike `getOrgKey()`'s
+  `dev-<uuid>` pattern, since a fake identity would defeat the point).
+  `connectWebSocket()` appends `?employeeEmail=` when set; heartbeat and
+  `dlp_event` payload builders both include it. New `handleRemoteMessage`
+  branch for `terminate_session`: logs and closes the socket —
+  deliberately does **not** set a local "stop reconnecting" flag. The
+  durable block is the server's upgrade-time 403 gate, not client
+  cooperation; `scheduleReconnect()` will keep retrying on its normal
+  backoff against the rejection (same as it would against any other
+  sustained rejection) — a known, accepted limitation, not silently
+  "fixed" by adding scope that wasn't asked for. Also: an `employeeEmail`
+  change now closes and re-establishes the current connection (was
+  previously only done for `policy` changes), since a stale connection
+  would otherwise sit under the wrong identity until it happened to
+  drop.
+- `extension/options/options.html` (previously a bare scaffold with *no
+  script tag at all*) + new `extension/options/options.js`: minimal
+  email input + Save button writing/clearing
+  `chrome.storage.local.employeeEmail`. New separate `.js` file because
+  MV3 CSP forbids inline `<script>` blocks. Bumped
+  `extension/manifest.json` version to `0.4.0` and updated its
+  description to mention Phase 4.
+- New `src/app/api/employees/[id]/revoke/route.ts`: `POST` only (Next
+  16's dynamic `params` is a `Promise`, confirmed against the bundled
+  docs and `await`ed). Updates `status`/`offboardedAt` **before** calling
+  `terminateEmployeeSessions` (closes the race where an instant reconnect
+  could otherwise slip through while status is still `"active"`).
+  Re-revoking an already-offboarded employee succeeds idempotently
+  (200, `terminatedSessions` naturally `0`) rather than erroring. Plain
+  REST is sufficient here — unlike `PolicyControlPanel`, this is a
+  one-shot admin action and `wsRegistry.ts`'s state is directly
+  reachable from any Route Handler in the same process, no need to route
+  it through a dashboard's own WebSocket connection.
+- **Users page**: `src/app/users/page.tsx` migrated off `mockData.ts`
+  onto `prisma.employee.findMany()`; `riskLevel` computed on read via
+  `riskLevelFromScore` (never persisted). New `src/types/employee.ts`
+  `EnrichedEmployee` type for the real shape (old mock-only `Employee`
+  interface renamed `MockEmployee`). New
+  `src/components/users/EmployeeTable.tsx` (`"use client"`, reuses the
+  existing status/risk badge styling, adds a Last Seen column, disables
+  the action button once already offboarded, does a local optimistic
+  update after a successful revoke instead of refetching) and
+  `src/components/users/OffboardModal.tsx` — **the first modal/dialog in
+  this codebase** (confirmed via `grep` — no prior pattern to follow, no
+  headless-ui/radix dependency; plain Tailwind fixed-overlay `div`,
+  `role="dialog"`, Escape-to-close, backdrop-click-to-close, a confirm
+  step before the destructive call since "1-click to open the action
+  modal" isn't the same ask as "no confirmation at all").
+- **Assets page**: `src/app/assets/page.tsx` migrated off `mockData.ts`.
+  New `src/types/asset.ts` `AssetEndpoint` composite type. Compliance
+  (green/red) computed from real data — any unacknowledged
+  `DlpAlert.geoViolation:true` for that employee — not a synthetic flag.
+  "OS" comes from each employee's most recent `Heartbeat.platform`
+  (fetched once, reduced to first-per-email in JS — flagged for a proper
+  `groupBy`/cap if the table grows, fine at current scale). Split into
+  three components because Leaflet touches `window`/`document` at import
+  time and Next's App Router disallows `dynamic(...,{ssr:false})` called
+  directly from a Server Component:
+  `src/components/assets/LeafletMap.tsx` (`"use client"`, the actual
+  `MapContainer`/`TileLayer`/`CircleMarker` markup),
+  `src/components/assets/AssetMap.tsx` (`"use client"`, the
+  `dynamic(...,{ssr:false})` wrapper + shared selected-asset state),
+  `src/components/assets/AssetDetailPanel.tsx` (presentational, no
+  `"use client"` needed since it's only ever rendered from the
+  already-client `AssetMap.tsx`). Markers are `CircleMarker`s colored by
+  compliance rather than the default Leaflet pin icon — sidesteps the
+  well-known Next.js/webpack default-marker-icon-404 problem entirely.
+  Tile source: public OpenStreetMap (free, no key) — fine for local dev,
+  flagged as a production/Phase-5 concern.
+- Added `leaflet@^1.9.4`, `react-leaflet@^5.0.0` (v5 targets React 19 —
+  v4 targets React 18 and would have been wrong for this repo, confirmed
+  via `npm view` peer deps before installing), `@types/leaflet` (dev).
+- `prisma/seed.ts`: now populates the new `Employee` columns (`title`,
+  `managedDeviceId`, `lastSeenAt`) that were previously generated by
+  `mockData.ts` but silently dropped during seeding. Seeded heartbeats
+  now carry `employeeEmail`/varied `platform.os`/an `ipAddress`; the
+  employee insert denormalizes `lastKnownIp` to match what a real
+  `ingestHeartbeat()` call would have set (seeding bypasses that
+  function, calling `prisma.heartbeat.createMany` directly, so this
+  needed doing explicitly). Added one explicit guaranteed
+  geo-violation/unacknowledged alert for the first device-bound employee
+  so the Asset Map always has at least one visible red marker regardless
+  of what the deterministic mock sequence happens to produce.
+- **Verified end-to-end**, not just type-checked: `npm run lint` and
+  `npx tsc --noEmit` clean throughout. Re-seeded and started `npm run
+  dev`. Confirmed via a real Playwright browser session: `/users` renders
+  live Prisma data (not mock); the Asset Map renders 24 real
+  `CircleMarker`s including 2 red (violation) ones, clicking one opens
+  the detail panel with correct employee/device/OS/IP/compliance data.
+  With a scratch `ws`-based agent script connected as a real active
+  employee's `employeeEmail`: confirmed normal connection succeeds,
+  then — while a second scratch listener stayed connected as that same
+  employee — called `POST /api/employees/[id]/revoke` via `curl` and
+  confirmed the live listener received `{type:"terminate_session",
+  reason:"offboarded"}` and was closed (code `4001`), the API response
+  showed `status:"offboarded"` and `terminatedSessions:1`, and a
+  subsequent reconnect attempt as that same (now offboarded) email was
+  rejected with HTTP 403 rather than silently succeeding. Also drove the
+  actual `OffboardModal` UI in the browser end-to-end (open → confirm →
+  "Revoked. 0 active sessions terminated." → close → table row updates
+  to "offboarded" with the action button now disabled, with no page
+  reload). Re-seeded the database afterward to restore a clean baseline
+  rather than leaving the two test-revoked employees in a dirty state.
+- Still open, carried forward: rule-based anomaly detection, the fuller
+  Policies UI (`sensitivePatterns`/`wsEndpoint` editing + audit trail),
+  and dashboard charts/analytics are all still Phase 4 backlog, not
+  touched in this pass. `getOrgKey()`/true org-tenant identity (distinct
+  from the new per-*employee* identity) is still dead code. There is
+  still no authentication on the revoke endpoint or on who can set an
+  extension's local `employeeEmail` — both explicitly Phase 5 territory,
+  not silently patched over here.
+
+**Status: Phase 4 IAM Users & Geo-Compliance Asset Map — Users page, Asset Map, and the employee-identity plumbing behind both are COMPLETE and verified end-to-end.** Rule-based detection, the fuller Policies UI, and dashboard analytics remain open on the Phase 4 backlog.

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Insider-Shield",
-  "version": "0.2.0",
-  "description": "Insider-Shield enterprise endpoint agent — managed-policy DLP monitoring (Phase 2).",
+  "version": "0.4.0",
+  "description": "Insider-Shield enterprise endpoint agent — managed-policy DLP monitoring, real-time telemetry, and per-employee session revocation (Phase 4).",
   "action": {
     "default_title": "Insider-Shield"
   },

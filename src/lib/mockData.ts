@@ -1,4 +1,6 @@
-import type { DlpAlert, DlpSeverity, Employee, RiskLevel } from "@/types";
+import type { DlpAlert, DlpSeverity, MockEmployee } from "@/types";
+import { CITIES, seededRandom } from "@/lib/geo";
+import { riskLevelFromScore } from "@/lib/risk";
 
 // Synthetic data only — no real employee, device, or incident records.
 // Intended for local dashboard development before the ingestion
@@ -15,15 +17,6 @@ const LAST_NAMES = [
 const DEPARTMENTS = ["Engineering", "Finance", "Sales", "HR", "Legal", "IT Ops"];
 const TITLES = ["Analyst", "Engineer", "Manager", "Coordinator", "Specialist", "Lead"];
 
-const CITIES: { city: string; country: string; lat: number; lng: number }[] = [
-  { city: "Colombo", country: "Sri Lanka", lat: 6.9271, lng: 79.8612 },
-  { city: "London", country: "United Kingdom", lat: 51.5072, lng: -0.1276 },
-  { city: "Singapore", country: "Singapore", lat: 1.3521, lng: 103.8198 },
-  { city: "New York", country: "United States", lat: 40.7128, lng: -74.006 },
-  { city: "Sydney", country: "Australia", lat: -33.8688, lng: 151.2093 },
-  { city: "Lagos", country: "Nigeria", lat: 6.5244, lng: 3.3792 },
-];
-
 const DLP_RULES: { name: DlpAlert["ruleName"]; severity: DlpSeverity }[] = [
   { name: "credit_card_like", severity: "high" },
   { name: "ssn_like", severity: "critical" },
@@ -32,40 +25,20 @@ const DLP_RULES: { name: DlpAlert["ruleName"]; severity: DlpSeverity }[] = [
   { name: "large_copy_selection", severity: "low" },
 ];
 
-// Small deterministic PRNG (mulberry32) so server-rendered mock data is
-// stable across a request instead of reshuffling on every re-render.
-function seededRandom(seed: number) {
-  let state = seed;
-  return () => {
-    state |= 0;
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function pick<T>(rand: () => number, list: T[]): T {
   return list[Math.floor(rand() * list.length)];
 }
 
-function riskLevelFromScore(score: number): RiskLevel {
-  if (score >= 85) return "critical";
-  if (score >= 65) return "high";
-  if (score >= 35) return "medium";
-  return "low";
-}
-
-export function generateMockEmployees(count = 24, seed = 42): Employee[] {
+export function generateMockEmployees(count = 24, seed = 42): MockEmployee[] {
   const rand = seededRandom(seed);
-  const employees: Employee[] = [];
+  const employees: MockEmployee[] = [];
 
   for (let i = 0; i < count; i++) {
     const first = pick(rand, FIRST_NAMES);
     const last = pick(rand, LAST_NAMES);
     const location = pick(rand, CITIES);
     const riskScore = Math.floor(rand() * 100);
-    const status: Employee["status"] = rand() > 0.92 ? "suspended" : rand() > 0.85 ? "offboarded" : "active";
+    const status: MockEmployee["status"] = rand() > 0.92 ? "suspended" : rand() > 0.85 ? "offboarded" : "active";
 
     employees.push({
       id: `emp-${i + 1}`,
@@ -92,7 +65,7 @@ export function generateMockEmployees(count = 24, seed = 42): Employee[] {
   return employees;
 }
 
-export function generateMockDlpAlerts(employees: Employee[], count = 18, seed = 7): DlpAlert[] {
+export function generateMockDlpAlerts(employees: MockEmployee[], count = 18, seed = 7): DlpAlert[] {
   const rand = seededRandom(seed);
   const alerts: DlpAlert[] = [];
 
@@ -119,7 +92,7 @@ export function generateMockDlpAlerts(employees: Employee[], count = 18, seed = 
 }
 
 export interface DashboardSnapshot {
-  employees: Employee[];
+  employees: MockEmployee[];
   alerts: DlpAlert[];
   totalEndpointPings: number;
   highSeverityAlertCount: number;
