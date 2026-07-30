@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Insider-Shield",
+  "version": "0.2.0",
+  "description": "Insider-Shield enterprise endpoint agent — managed-policy DLP monitoring (Phase 2).",
+  "action": {
+    "default_title": "Insider-Shield"
+  },
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options/options.html",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "clipboardRead"
+  ]
+}

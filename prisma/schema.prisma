@@ -1,0 +1,60 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Employee {
+  id         String   @id @default(cuid())
+  name       String
+  email      String   @unique
+  department String
+  riskScore  Int
+  status     String // "active" | "suspended" | "offboarded"
+  createdAt  DateTime @default(now())
+}
+
+// `snippet` and `redactedContent` are both always pre-redacted values
+// (masked excerpts / metadata-only descriptions) produced upstream by
+// the extension content script or the telemetry route — never the raw
+// matched sensitive text. No column in this table stores un-redacted
+// user content.
+model DlpAlert {
+  id              String   @id @default(cuid())
+  timestamp       DateTime @default(now())
+  severity        String // "low" | "medium" | "high" | "critical"
+  employeeEmail   String
+  ruleTriggered   String
+  snippet         String
+  redactedContent String
+  sourceUrl       String
+  geoViolation    Boolean  @default(false)
+  acknowledged    Boolean  @default(false)
+}
+
+// Key/value rows so the policy shape can evolve without a migration per
+// field. `value` is JSON-encoded since fields vary in type (boolean,
+// number, array, string) — see src/lib/policyStore.ts for the
+// encode/decode logic shared with extension/background/background.js's
+// policy schema.
+model SystemPolicy {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model Heartbeat {
+  id        String   @id @default(cuid())
+  orgKey    String
+  platform  String // JSON-encoded { os, arch }
+  timestamp DateTime @default(now())
+  status    String
+}
