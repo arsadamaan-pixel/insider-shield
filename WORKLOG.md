@@ -248,3 +248,29 @@
   behind `wsEndpoint` (unchanged from Phase 2/3 notes).
 
 **Status: Phase 3 SQLite Data Persistence sub-task COMPLETE. Phase 3 overall remains in progress pending the real-time WebSocket transport.**
+
+## 2026-07-30 — Git Milestone: Phase 1–3 Pushed to GitHub
+
+- Reviewed `.gitignore`: confirmed `.env*`, `/node_modules`, `/.next/`,
+  `*.db`, `*.db-journal`, `/prisma/dev.db`, and `/src/generated/prisma`
+  are all covered (deduped one accidentally-repeated line). Verified via
+  `git status --ignored` that `.env` and `dev.db` are in fact ignored,
+  not just absent.
+- Staged all Phase 1–3 work explicitly by path (docs, `extension/`,
+  `prisma/`, `prisma.config.ts`, `src/`, config file changes) — checked
+  `git diff --cached --name-only` against `.env`/`dev.db`/
+  `generated/prisma` patterns first to confirm nothing sensitive or
+  generated was picked up.
+- Committed as `c534202`: `feat(phase3): implement SQLite database
+  persistence, Prisma ORM, and dynamic page rendering` (40 files
+  changed).
+- This repo had no git remote configured yet. Asked before doing
+  anything about it — user chose to create a new GitHub repo rather
+  than push to an existing one. Created **`insider-shield`** as a
+  **private** repo under the authenticated `arsadamaan-pixel` GitHub
+  account via `gh repo create insider-shield --private --source=.
+  --remote=origin`, then `git push -u origin main`.
+- Remote: `git@github.com:arsadamaan-pixel/insider-shield.git`. `main`
+  now tracks `origin/main`.
+
+**Status: Phase 1–3 (through SQLite Data Persistence) pushed to `origin/main` on GitHub (`insider-shield`, private).**
