@@ -1,3 +1,4 @@
+import type { AuditLogEntry } from "./auditLog";
 import type { DlpAlert } from "./dlpAlert";
 import type { SystemPolicy } from "./systemPolicy";
 
@@ -32,8 +33,15 @@ export interface TerminateSessionMessage {
   reason?: string;
 }
 
+// Sent whenever a new AuditLog row is written, so the Audit page can
+// update live without a refresh.
+export interface AuditLogMessage {
+  type: "audit_log";
+  entry: AuditLogEntry;
+}
+
 // Messages the server pushes to dashboard-role sockets.
-export type ServerToDashboardMessage = DlpAlertMessage | PolicyUpdateMessage;
+export type ServerToDashboardMessage = DlpAlertMessage | PolicyUpdateMessage | AuditLogMessage;
 
 // Messages the server pushes to agent-role sockets.
 export type ServerToAgentMessage = PolicyUpdateMessage | TerminateSessionMessage;

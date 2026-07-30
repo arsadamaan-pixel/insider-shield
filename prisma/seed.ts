@@ -29,6 +29,7 @@ async function main() {
   await prisma.heartbeat.deleteMany();
   await prisma.systemPolicy.deleteMany();
   await prisma.employee.deleteMany();
+  await prisma.auditLog.deleteMany();
 
   const mockEmployees = generateMockEmployees();
   const mockAlerts = generateMockDlpAlerts(mockEmployees);

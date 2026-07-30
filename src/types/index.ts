@@ -4,3 +4,4 @@ export * from "./systemPolicy";
 export * from "./heartbeat";
 export * from "./websocket";
 export * from "./asset";
+export * from "./auditLog";

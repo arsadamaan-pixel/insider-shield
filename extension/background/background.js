@@ -91,6 +91,20 @@ async function getEmployeeEmail() {
   return local.employeeEmail || undefined;
 }
 
+// Unlike getOrgKey() (a per-install device ID, never validated by
+// anything), this is the new shared-secret credential the server
+// actually authenticates agent WebSocket connections with (Phase 5's
+// ORG_ACCESS_KEY check in server.ts's WS upgrade handler). No anonymous
+// fallback: an agent with no orgAccessKey configured simply cannot
+// connect, by design.
+async function getOrgAccessKey() {
+  const managed = await readManagedStorage();
+  if (managed.orgAccessKey) return managed.orgAccessKey;
+
+  const local = await readLocalStorage(["orgAccessKey"]);
+  return local.orgAccessKey || undefined;
+}
+
 // --- WebSocket client -------------------------------------------------
 // Connects to the real-time transport server (server.ts) at wsEndpoint,
 // identifying itself as an agent-role connection via ?role=agent so the
@@ -103,6 +117,7 @@ const wsClient = {
   heartbeatTimer: null,
   eventBuffer: [], // bounded ring buffer, drained on send, cleared on reconnect
   employeeEmail: undefined, // set from getEmployeeEmail() at each connect attempt
+  orgAccessKey: undefined, // set from getOrgAccessKey() at each connect attempt
 };
 
 const MAX_BUFFERED_EVENTS = 50;
@@ -128,8 +143,10 @@ async function connectWebSocket(policy) {
   wsClient.state = "connecting";
   try {
     wsClient.employeeEmail = await getEmployeeEmail();
+    wsClient.orgAccessKey = await getOrgAccessKey();
     const url = new URL(effectivePolicy.wsEndpoint);
     url.searchParams.set("role", "agent");
+    if (wsClient.orgAccessKey) url.searchParams.set("orgAccessKey", wsClient.orgAccessKey);
     if (wsClient.employeeEmail) url.searchParams.set("employeeEmail", wsClient.employeeEmail);
     wsClient.socket = new WebSocket(url.toString());
   } catch (err) {
@@ -284,11 +301,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "managed" || (areaName === "local" && (changes.policy || changes.employeeEmail))) {
-    // An employeeEmail change (e.g. saved via the options page) means
-    // the current connection, if any, is under the wrong identity —
-    // drop it so connectWebSocket() re-establishes with the new one.
-    if (changes.employeeEmail && wsClient.socket) {
+  if (areaName === "managed" || (areaName === "local" && (changes.policy || changes.employeeEmail || changes.orgAccessKey))) {
+    // An employeeEmail/orgAccessKey change (e.g. saved via the options
+    // page) means the current connection, if any, is under the wrong
+    // identity/credential — drop it so connectWebSocket() re-establishes
+    // with the new one.
+    if ((changes.employeeEmail || changes.orgAccessKey) && wsClient.socket) {
       wsClient.socket.close(4000, "identity_changed");
     }
     getEffectivePolicy().then((policy) => {

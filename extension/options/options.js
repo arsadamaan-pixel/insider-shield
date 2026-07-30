@@ -1,29 +1,49 @@
-// Insider-Shield — options page script (Phase 4).
+// Insider-Shield — options page script (Phase 4/5).
 //
-// Local-dev fallback for setting this device's employee identity.
-// Managed policy (chrome.storage.managed.employeeEmail) always takes
-// precedence over this — see background.js's getEmployeeEmail().
+// Local-dev fallback for setting this device's employee identity and
+// org access credential. Managed policy (chrome.storage.managed.*)
+// always takes precedence over these — see background.js's
+// getEmployeeEmail()/getOrgAccessKey().
 
 const form = document.getElementById("identity-form");
-const input = document.getElementById("employeeEmail");
+const fields = [
+  { id: "employeeEmail", key: "employeeEmail" },
+  { id: "orgAccessKey", key: "orgAccessKey" },
+];
 const status = document.getElementById("status");
 
-chrome.storage.local.get(["employeeEmail"], (data) => {
-  if (data.employeeEmail) input.value = data.employeeEmail;
-});
+chrome.storage.local.get(
+  fields.map((f) => f.key),
+  (data) => {
+    for (const field of fields) {
+      const input = document.getElementById(field.id);
+      if (data[field.key]) input.value = data[field.key];
+    }
+  }
+);
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  const value = input.value.trim();
+
+  const toSet = {};
+  const toRemove = [];
+  for (const field of fields) {
+    const value = document.getElementById(field.id).value.trim();
+    if (value) toSet[field.key] = value;
+    else toRemove.push(field.key);
+  }
 
   const done = () => {
-    status.textContent = value ? `Saved: ${value}` : "Cleared.";
+    status.textContent = "Saved.";
   };
 
-  if (value) {
-    chrome.storage.local.set({ employeeEmail: value }, done);
-  } else {
-    // set({employeeEmail: undefined}) would not reliably clear the key.
-    chrome.storage.local.remove("employeeEmail", done);
-  }
+  chrome.storage.local.set(toSet, () => {
+    if (toRemove.length > 0) {
+      // set({key: undefined}) would not reliably clear a key — remove
+      // any cleared fields separately.
+      chrome.storage.local.remove(toRemove, done);
+    } else {
+      done();
+    }
+  });
 });

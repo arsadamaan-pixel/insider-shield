@@ -75,3 +75,21 @@ model Heartbeat {
 
   @@index([employeeEmail])
 }
+
+// Append-only security audit trail — see src/lib/auditLog.ts's
+// logAuditEvent(). `action` is a free-form string (matches this
+// schema's existing convention for Employee.status/DlpAlert.severity),
+// not a Prisma enum — see src/types/auditLog.ts's AUDIT_ACTIONS for the
+// known set used by the Audit page's filter UI.
+model AuditLog {
+  id             String   @id @default(cuid())
+  timestamp      DateTime @default(now())
+  actorEmail     String
+  action         String
+  targetResource String
+  detailsJson    String?
+  ipAddress      String?
+
+  @@index([timestamp])
+  @@index([action])
+}

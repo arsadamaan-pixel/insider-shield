@@ -1,5 +1,6 @@
 import type { DlpAlert, DlpSeverity } from "@/types";
 import { prisma } from "@/lib/prisma";
+import { logAuditEvent } from "@/lib/auditLog";
 
 // Shared between the REST ingestion route (src/app/api/telemetry/route.ts)
 // and the WebSocket agent-message handler (server.ts) so both persist
@@ -57,7 +58,7 @@ export function isValidHeartbeat(body: unknown): body is IncomingHeartbeat {
   );
 }
 
-export async function ingestDlpEvent(payload: IncomingDlpEvent): Promise<DlpAlert> {
+export async function ingestDlpEvent(payload: IncomingDlpEvent, meta?: { ipAddress?: string }): Promise<DlpAlert> {
   const employeeEmail = payload.employeeEmail ?? "unknown@insider-shield.dev";
   const [row, employee] = await Promise.all([
     prisma.dlpAlert.create({
@@ -74,6 +75,17 @@ export async function ingestDlpEvent(payload: IncomingDlpEvent): Promise<DlpAler
     }),
     prisma.employee.findUnique({ where: { email: employeeEmail } }),
   ]);
+
+  // Audit-logged here (not every heartbeat — high-volume liveness pings,
+  // low audit value) since this is the single place both the WS and REST
+  // ingestion paths converge.
+  await logAuditEvent({
+    actorEmail: employeeEmail,
+    action: "dlp_event_ingested",
+    targetResource: row.id,
+    details: { ruleName: payload.ruleName, hostname: payload.hostname, severity: row.severity },
+    ipAddress: meta?.ipAddress,
+  });
 
   return {
     id: row.id,

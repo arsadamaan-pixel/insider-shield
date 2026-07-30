@@ -590,3 +590,208 @@
   not silently patched over here.
 
 **Status: Phase 4 IAM Users & Geo-Compliance Asset Map — Users page, Asset Map, and the employee-identity plumbing behind both are COMPLETE and verified end-to-end.** Rule-based detection, the fuller Policies UI, and dashboard analytics remain open on the Phase 4 backlog.
+
+## 2026-07-30 — Phase 5: Auth, API Security, and Audit Logging Layer
+
+- **Two design decisions confirmed with the user before building anything**
+  (both had real, non-obvious footprints): `ORG_ACCESS_KEY` is a brand
+  new, separately-named credential — not a repurposing of the
+  extension's existing vestigial `orgKey` (a random per-install device
+  ID, never validated by anything, still untouched dead code) — since
+  conflating "which device is this" with "is this request authorized"
+  would be a code smell even though the field was sitting right there
+  unused. And `BEARER_TOKEN` gates the *entire* dashboard (every page,
+  not just mutating calls), matching PLAN.md's own Phase 5 framing
+  ("Authentication/authorization for the dashboard **and** the API") —
+  DLP alert content, employee PII, and now the audit trail itself
+  shouldn't be viewable pre-login either.
+- **Critical version-specific finding, verified directly against the
+  installed Next docs, not training data** (per this repo's own
+  `AGENTS.md` mandate): `node_modules/next/dist/docs` has no
+  `middleware.md` at all — only `proxy.md`. As of **Next 16.0.0,
+  `middleware.ts` is deprecated and renamed to `proxy.ts`**, exporting a
+  `proxy(request: NextRequest)` function. Built `src/proxy.ts`, not
+  `middleware.ts`. Proxy defaults to the Node.js runtime (not edge), so
+  `src/lib/auth.ts`'s built-in `crypto` usage is safe there. Also
+  confirmed by tracing Node's event model: WebSocket upgrade requests
+  fire the `upgrade` event, never `request` — so `proxy.ts` structurally
+  cannot run for `/api/ws` no matter what its matcher says; the WS-layer
+  checks added to `server.ts` are the sole gate for that surface, not
+  defense-in-depth stacked on top of proxy.
+- **A real startup crash caught during verification, not assumed away**:
+  first pass of `src/lib/auth.ts` imported `NextResponse` from
+  `"next/server"` for its Route-Handler convenience wrappers. Since
+  `server.ts` imports `@/lib/auth` at its top level — evaluated by `tsx`
+  *before* `next({...})` ever runs — this crashed immediately on
+  `npm run dev` with `Error: Invariant: AsyncLocalStorage accessed in
+  runtime where it is not available`. Fixed by splitting the module:
+  `src/lib/auth.ts` now has zero `next/server`/`next/headers` imports
+  (pure `node:crypto` + string-in/string-out functions), while the new
+  `src/lib/authGuards.ts` holds the two `NextResponse`-returning
+  wrappers (`requireOrgAccessKey`, `requireDashboardSession`), imported
+  only by Route Handlers — which Next always loads lazily through its
+  own request pipeline, never by `server.ts`. Verified the fix by
+  actually restarting the dev server and confirming clean boot, not just
+  by reasoning about it.
+- **Session mechanism**: HMAC-signed opaque cookie via built-in
+  `node:crypto` (`createHmac`/`timingSafeEqual`), not a JWT library —
+  this project needs exactly one shared secret with no per-user claims
+  beyond an optional operator label, so `jose`'s framing/algorithm-
+  negotiation machinery would be the first auth dependency added to a
+  project that has zero today, for no real benefit. Format:
+  `base64url(JSON({iat,exp,operator?})) + "." +
+  hex(HMAC-SHA256(payload, SESSION_SECRET))`. `SESSION_SECRET` is a
+  third, distinct env var from `BEARER_TOKEN` — the login credential and
+  the cookie-signing key shouldn't be the same secret. All three secret
+  comparisons (`ORG_ACCESS_KEY`, `BEARER_TOKEN`, the session HMAC) go
+  through `timingSafeEqualStrings()`, which hashes both inputs to a
+  fixed 32-byte SHA-256 digest before `crypto.timingSafeEqual` — that
+  function throws on unequal-length buffers, so a naive
+  `a.length === b.length` pre-check would leak length via
+  timing/exception behavior; hashing first means it's always called
+  with two equal-length buffers and can never throw.
+- **`server.ts`**: WS upgrade handler now requires a valid
+  `orgAccessKey` query param for `role=agent` and a valid session cookie
+  (`req.headers.cookie`, read manually — this is a raw Node
+  `IncomingMessage` in the `upgrade` event, no `NextRequest`/`cookies()`
+  helper available here) for `role=dashboard`, both **401** and checked
+  *before* the existing employee-status lookup — so an unauthenticated
+  caller gets a uniform rejection with zero information leakage, unable
+  to use the endpoint to probe whether a given `employeeEmail`
+  exists/is active. The pre-existing offboarded-employee check stays
+  **403** (distinguishing "who are you" from "that identity is
+  forbidden"). Also captures the session's operator label at handshake
+  time (`getSessionOperator`) and threads it into `handleDashboardMessage`
+  for audit attribution — WS messages have no per-message cookie access,
+  only the upgrade request does. Also: `next({dev})` → `next({dev,
+  hostname: "localhost", port})`, keeping `proxy.ts`'s internal
+  invocation URL correct if `PORT` is ever overridden (traced through
+  `next/dist/server/next-server.js`'s `runMiddleware()`, which otherwise
+  defaults to port 3000).
+- **REST routes**: `/api/telemetry` POST requires `X-Org-Access-Key`
+  (agent traffic); its GET requires the dashboard session instead (it's
+  dashboard-debug data — recent alerts/heartbeats — the extension
+  confirmed never calls `GET` at all). `/api/policies` (GET+POST) and
+  `/api/employees/[id]/revoke` both require the dashboard session.
+  **No client-side changes were needed** in `PolicyControlPanel.tsx`,
+  `OffboardModal.tsx`, or `useWebSocket.ts` — verified empirically, not
+  assumed: the httpOnly session cookie is same-origin and the browser
+  auto-attaches it to both `fetch()` calls and the WS handshake once
+  logged in, so every existing REST/WS call site kept working with zero
+  header-threading changes.
+- **Audit logging** (`src/lib/auditLog.ts`'s `logAuditEvent()`, new
+  `AuditLog` model): wired into both policy-update paths (WS
+  `handleDashboardMessage` and REST `POST /api/policies`), employee
+  revoke, `ingestDlpEvent` (shared by the WS and REST ingestion paths,
+  so both get it for free) — deliberately **not** every heartbeat
+  (high-volume liveness pings, low audit value; confirmed via `sqlite3`
+  query during testing that heartbeat POSTs produce zero audit rows,
+  while a `dlp_event` POST produces exactly one) — and every auth
+  failure (agent/dashboard WS rejections, failed logins). The
+  auth-failure logging wasn't explicitly on the original list but is a
+  textbook high-value audit use case directly complementary to the
+  endpoint-security work in the same phase. `logAuditEvent()` never
+  throws (a logging failure must never roll back the security action it
+  describes) and broadcasts a new `audit_log` WS message to dashboard
+  sockets so `/audit` updates live.
+- **Login also captures an optional operator label** (confirmed with
+  the user rather than defaulting silently) — carried in the signed
+  session, used as `actorEmail` on that operator's subsequent
+  dashboard-originated actions (falling back to the existing `updatedBy`
+  string, then `"dashboard-ui"`, when absent). Without this, every
+  action taken through the single shared `BEARER_TOKEN` would log under
+  the same generic string, defeating the point of having an `actorEmail`
+  column at all.
+- **`src/proxy.ts`**: redirects to `/login?next=<path>` for page
+  navigations, returns JSON 401 for `/api/*`, when the session check
+  fails — for every path except `/login`, `/api/auth/login`, and
+  `/api/telemetry` (excluded so legitimate `ORG_ACCESS_KEY`-authenticated
+  agent POSTs aren't rejected by a blanket dashboard-session rule before
+  reaching that route's own check). Per Next's own docs' explicit
+  warning ("Always verify authentication and authorization inside each
+  Server Function rather than relying on Proxy alone"), every Route
+  Handler also self-guards — proxy is the primary gate, not the only
+  one.
+- **Restructured `src/app/`** into a `(dashboard)` route group
+  (`page.tsx`, `users/`, `policies/`, `assets/`, and the new `audit/`
+  moved inside it, each keeping its exact existing content) with its
+  own `layout.tsx` rendering `<Sidebar/>` + `<main>`, so `/login`
+  (outside the group) renders without a sidebar full of links that would
+  all just redirect back to `/login` anyway — confirmed via screenshot
+  that the unstyled version (sidebar bleeding into the login card) was a
+  real, visible bug before this fix, not a hypothetical one. Root
+  `layout.tsx` now only provides `<html>/<body>` + font loading.
+- **`/login`** (`src/app/login/page.tsx`): token + optional operator
+  label, posts to `/api/auth/login`, redirects to `?next=` on success.
+  **`/api/auth/login`**: rate-limited (in-memory, `globalThis`-cached
+  matching `wsRegistry.ts`'s pattern — 5 attempts/5min per IP, cheap
+  defense-in-depth given the project's prototype maturity, not a
+  substitute for a sufficiently random `BEARER_TOKEN`), logs
+  `login_succeeded`/`login_failed`. **`/api/auth/logout`** clears the
+  cookie; wired a "Log out" control into `Sidebar.tsx`'s footer,
+  confirmed via browser that it actually clears the session (a
+  subsequent page load redirects to `/login` again, not just that the
+  button navigates away).
+- **New `/audit` page**: `src/app/(dashboard)/audit/page.tsx` (real
+  Prisma data, `take: 200` ordered by `timestamp desc`) +
+  `src/components/audit/AuditLogTable.tsx` (presentational, matching
+  `IncidentFeedTable.tsx`'s exact structure/styling) +
+  `src/components/audit/LiveAuditTrail.tsx` (`"use client"`, live via
+  the same `useWebSocket`-based pattern as `LiveIncidentFeed.tsx`, plus
+  a text-search input and an action `<select>` filtering the
+  already-fetched list client-side) — **the first search/filter UI in
+  this codebase**, confirmed via grep there was no existing pattern to
+  extract. Added `{href:"/audit", icon:ScrollText}` to `Sidebar.tsx`'s
+  `NAV_ITEMS` (confirmed the icon exists in the installed `lucide-react`
+  before using it).
+- **Extension**: `extension/background/background.js` gained
+  `getOrgAccessKey()`, mirroring `getEmployeeEmail()`'s exact
+  managed-storage-first/no-anonymous-fallback shape, wired into
+  `connectWebSocket()`'s URL construction as a third query param.
+  `extension/options/options.html`/`options.js` gained a matching form
+  field, generalizing the save/clear logic to loop over both identity
+  fields instead of hardcoding just `employeeEmail`. An
+  `orgAccessKey` change now also force-closes and reconnects the socket
+  (same treatment `employeeEmail` changes already got), since a stale
+  connection would otherwise sit under the wrong credential until it
+  happened to drop on its own.
+- **Verified end-to-end**, not just type-checked: `npm run lint` and
+  `npx tsc --noEmit` clean throughout (including catching and fixing the
+  AsyncLocalStorage crash above via an actual `npm run dev` restart, not
+  assumed fixed from reading the diff). `curl` confirmed `POST
+  /api/policies` with no cookie returns `401 {"error":"unauthorized"}`
+  JSON (not an HTML redirect page) and `POST /api/telemetry` with a
+  valid `X-Org-Access-Key` header succeeds with no dashboard cookie
+  present, proving the proxy exclusion works. A scratch `ws`-based
+  script confirmed all four WS-auth branches: agent with no key → 401,
+  agent with a wrong key → 401, agent with the real key → open,
+  dashboard with no cookie → 401. `sqlite3` confirmed `agent_auth_failed`
+  / `dashboard_auth_failed` rows were actually written for those
+  rejections. In a real Playwright browser: unauthenticated `/` redirect
+  to `/login`, wrong-token rejection with an inline error message,
+  correct-token-plus-operator login redirecting back to the original
+  `next` page, Policy Control Panel push via the authenticated WS
+  session ("Pushed via WebSocket", no client code changes), employee
+  revoke via the authenticated REST session, `/audit` showing all of the
+  above live with `"Arsad"` as `actorEmail` on the operator-attributed
+  rows and `"unknown"` on the pre-login failures, search/filter
+  narrowing the list correctly, and logout actually invalidating the
+  session (confirmed by a second unauthenticated redirect, not just the
+  logout button visually navigating away). Added `prisma.auditLog.deleteMany()`
+  to `prisma/seed.ts`'s existing wipe-and-reseed step (a gap from
+  building `AuditLog` mid-phase) and re-seeded afterward so test-only
+  audit noise (auth failures, the test revoke, test policy toggles)
+  doesn't linger as the first thing a fresh user sees on `/audit`.
+- Still open, carried forward: legal/compliance review of DLP data
+  collection and the Vercel deployment pipeline are both still Phase 5
+  backlog, not touched in this pass — deploying this custom-server
+  architecture to Vercel specifically still needs its own decision
+  (Vercel's serverless functions can't hold the long-lived WS upgrade
+  open at all, a gap flagged since Phase 3). Rate limiting on `/login`
+  is IP-based and in-memory only — resets on process restart and doesn't
+  survive multi-instance deployment, fine for this single-process local
+  setup but would need a shared store (Redis, etc.) for real production
+  use. No true per-user dashboard accounts exist — the optional operator
+  label is self-reported at login, not verified identity.
+
+**Status: Phase 5 Auth, API Security, and Audit Logging Layer — dashboard/API authentication and audit logging are COMPLETE and verified end-to-end.** Legal/compliance review and the Vercel deployment pipeline remain open on the Phase 5 backlog.

@@ -5,6 +5,8 @@ import { ingestDlpEvent, ingestHeartbeat, isValidDlpEvent, isValidHeartbeat } fr
 import { sanitizePolicyUpdate, setPolicy } from "@/lib/policyStore";
 import { prisma } from "@/lib/prisma";
 import { agentSockets, dashboardSockets, broadcast, registerConnection } from "@/lib/wsRegistry";
+import { getSessionOperator, hasValidDashboardSession, isValidOrgAccessKey } from "@/lib/auth";
+import { logAuditEvent } from "@/lib/auditLog";
 import type { WsRole } from "@/types";
 
 // Custom server wrapping the Next.js App Router so a long-lived `ws`
@@ -23,7 +25,7 @@ import type { WsRole } from "@/types";
 const dev = process.env.NODE_ENV !== "production";
 const port = Number(process.env.PORT) || 3000;
 
-const app = next({ dev });
+const app = next({ dev, hostname: "localhost", port });
 const handle = app.getRequestHandler();
 
 interface AgentIdentity {
@@ -43,7 +45,10 @@ async function handleAgentMessage(raw: WebSocket.RawData, identity: AgentIdentit
   // anything a payload itself claims — a message can't assert a
   // different identity mid-connection than what it authenticated with.
   if (isValidDlpEvent(payload)) {
-    const alert = await ingestDlpEvent({ ...payload, employeeEmail: identity.employeeEmail ?? payload.employeeEmail });
+    const alert = await ingestDlpEvent(
+      { ...payload, employeeEmail: identity.employeeEmail ?? payload.employeeEmail },
+      { ipAddress: identity.ipAddress }
+    );
     broadcast(dashboardSockets, { type: "dlp_alert", alert });
     return;
   }
@@ -56,7 +61,12 @@ async function handleAgentMessage(raw: WebSocket.RawData, identity: AgentIdentit
   }
 }
 
-async function handleDashboardMessage(raw: WebSocket.RawData) {
+interface DashboardContext {
+  operator?: string;
+  ipAddress?: string;
+}
+
+async function handleDashboardMessage(raw: WebSocket.RawData, context: DashboardContext) {
   let payload: unknown;
   try {
     payload = JSON.parse(raw.toString());
@@ -77,6 +87,14 @@ async function handleDashboardMessage(raw: WebSocket.RawData) {
   const policy = await setPolicy(update, updatedBy);
   broadcast(agentSockets, { type: "policy_update", policy });
   broadcast(dashboardSockets, { type: "policy_update", policy });
+
+  await logAuditEvent({
+    actorEmail: context.operator ?? updatedBy,
+    action: "policy_update",
+    targetResource: "SystemPolicy",
+    details: update,
+    ipAddress: context.ipAddress,
+  });
 }
 
 const wss = new WebSocketServer({ noServer: true });
@@ -102,8 +120,42 @@ app.prepare().then(() => {
       return;
     }
 
-    const employeeEmail = role === "agent" ? (searchParams.get("employeeEmail") ?? undefined) : undefined;
     const ipAddress = req.socket.remoteAddress ?? undefined;
+
+    // Credential check first, before any employee-status lookup below —
+    // an unauthenticated caller must get a uniform 401 with zero
+    // information leakage, not a chance to probe whether a given
+    // employeeEmail exists/is active.
+    if (role === "agent") {
+      if (!isValidOrgAccessKey(searchParams.get("orgAccessKey"))) {
+        void logAuditEvent({
+          actorEmail: "unknown",
+          action: "agent_auth_failed",
+          targetResource: "/api/ws",
+          details: { reason: "invalid_or_missing_orgAccessKey" },
+          ipAddress,
+        });
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    } else {
+      if (!hasValidDashboardSession(req.headers.cookie)) {
+        void logAuditEvent({
+          actorEmail: "unknown",
+          action: "dashboard_auth_failed",
+          targetResource: "/api/ws",
+          details: { reason: "invalid_or_missing_session" },
+          ipAddress,
+        });
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    }
+
+    const employeeEmail = role === "agent" ? (searchParams.get("employeeEmail") ?? undefined) : undefined;
+    const dashboardOperator = role === "dashboard" ? getSessionOperator(req.headers.cookie) : undefined;
 
     // Reject reconnects for an employee whose access has been revoked —
     // without this, terminateEmployeeSessions() only delays reconnection
@@ -121,7 +173,10 @@ app.prepare().then(() => {
       registerConnection(ws, role, { employeeEmail, ipAddress });
 
       ws.on("message", (raw) => {
-        const handler = role === "agent" ? handleAgentMessage(raw, { employeeEmail, ipAddress }) : handleDashboardMessage(raw);
+        const handler =
+          role === "agent"
+            ? handleAgentMessage(raw, { employeeEmail, ipAddress })
+            : handleDashboardMessage(raw, { operator: dashboardOperator, ipAddress });
         handler.catch((err) => console.error(`[ws] error handling ${role} message:`, err));
       });
 

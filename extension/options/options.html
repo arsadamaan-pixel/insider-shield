@@ -24,6 +24,15 @@
         SOC dashboard can attribute this session to a specific employee
         (needed for the per-employee offboard/revoke action).
       </p>
+
+      <label for="orgAccessKey">Org access key (local-dev credential)</label>
+      <input type="text" id="orgAccessKey" name="orgAccessKey" placeholder="shared secret from the SOC admin" />
+      <p class="hint">
+        Required for this device's WebSocket connection to be accepted
+        by the server at all. Only used when no enterprise-managed
+        policy supplies one.
+      </p>
+
       <button type="submit">Save</button>
     </form>
     <p id="status" role="status"></p>
