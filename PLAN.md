@@ -78,22 +78,53 @@ milestone status.
       dashboard (`src/app/page.tsx`) and policies page now query the DB
       and are marked `export const dynamic = "force-dynamic"` so they
       reflect live writes instead of a build-time snapshot.
-- Note carried forward: standard Next.js API routes on Vercel don't
-  support long-lived WebSocket upgrades, so `wsEndpoint` still has no
-  real-time transport behind it — the extension's WebSocket client will
-  keep reconnecting with backoff until this is addressed (custom
-  Node/`ws` process for local dev; SSE or a managed realtime service for
-  production on Vercel).
 - Added `lucide-react` and `recharts` as dependencies (per the stack
   table above) to build the sidebar icons and risk gauge.
 - Added `prisma`, `@prisma/client`, `@prisma/adapter-better-sqlite3`,
   `tsx`, `dotenv` — see `WORKLOG.md` for a caveat on `@prisma/client`
   being a devDependency despite being required at runtime.
+- [x] **Real-Time WebSocket Transport Engine — COMPLETE.** `server.ts`
+      (repo root) wraps the Next.js App Router in a custom Node `http`
+      server and attaches a `ws` WebSocket server at `/api/ws`, routing
+      connections by a `role=agent|dashboard` handshake query param.
+      Agent-role sockets: heartbeat/dlp_event payloads validated and
+      persisted via Prisma (`src/lib/telemetryIngest.ts`, shared with
+      the REST fallback), DLP alerts broadcast live to all
+      dashboard-role sockets. Dashboard-role sockets: `policy_update`
+      payloads validated (`sanitizePolicyUpdate` in
+      `src/lib/policyStore.ts`, shared with the REST route), persisted,
+      and pushed live to all agent-role **and** dashboard-role sockets
+      (multi-tab consistency). `src/lib/useWebSocket.ts` (client hook,
+      same-origin URL, extension-matching reconnect backoff) powers a
+      live Incident Feed on the Overview page
+      (`src/components/dashboard/LiveIncidentFeed.tsx`) and a new
+      Policy Control Panel on the Policies page
+      (`src/components/policies/PolicyControlPanel.tsx`, REST fallback
+      when the socket isn't open) — the Policies page previously had no
+      edit UI at all. `extension/background/background.js` updated to
+      send `?role=agent` on connect (it previously sent no query params
+      at all, which would have left every real agent connection
+      unclassified). `npm run dev` now runs `tsx watch server.ts`
+      instead of `next dev`. `build`/`start` intentionally left on stock
+      Next.js for now — see "Note carried forward" below.
+- Note carried forward: `build`/`start` still don't run the custom WS
+  server (scoped to local dev for this task); production hosting is
+  Phase 5 work, and Vercel specifically can't hold long-lived WebSocket
+  upgrades at all, so that will need its own decision (a different host,
+  or SSE/a managed realtime service) rather than just reusing
+  `server.ts` as-is. The extension's `getOrgKey()`/org-identity gap
+  (heartbeat/dlp_event payloads never include `orgKey`) is unchanged —
+  every agent socket is currently treated as the same implicit
+  single-tenant org, consistent with the rest of the app having no
+  auth yet.
 
 ### Phase 4 — Detection, Geo-Compliance & Dashboard UX — ⏳ PENDING
 - [ ] Rule-based anomaly detection on ingested events.
 - [ ] Interactive asset map (Leaflet / React-Leaflet) with GeoIP helpers.
-- [ ] Policies UI for remote OTA rule authoring/distribution.
+- [ ] Fuller Policies UI for remote OTA rule authoring/distribution —
+      `sensitivePatterns` and `wsEndpoint` editing, plus an audit trail.
+      The minimal Policy Control Panel added in Phase 3 covers
+      `dlpEnabled`/`transmitEvents`/`heartbeatIntervalMs` only.
 - [ ] Charts/analytics on the dashboard overview (Recharts).
 - [ ] Migrate `users/` and `assets/` placeholder pages off `mockData.ts`
       onto the same Prisma queries `page.tsx`/`policies/` now use (out
@@ -108,8 +139,8 @@ milestone status.
 
 ## Active Milestone
 
-**Phase 3 — Dashboard & Ingestion Foundation** is in progress as of
-2026-07-30. Dashboard UI, mock data, and the two ingestion API routes
-are done; the real-time WebSocket transport and a persistent datastore
-remain open (see Phase 3 checklist above). Phase 1 and Phase 2 are
-complete.
+**Phase 3 — Dashboard & Ingestion Foundation is now COMPLETE** as of
+2026-07-30: dashboard UI, the two ingestion API routes, SQLite
+persistence, and the real-time WebSocket transport are all done (see
+Phase 3 checklist above). Phase 1 and Phase 2 are complete. Phase 4
+(Detection, Geo-Compliance & Dashboard UX) is next.

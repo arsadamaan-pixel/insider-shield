@@ -2,7 +2,7 @@ import { Activity, ShieldAlert, MapPinOff } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { RiskGauge } from "@/components/dashboard/RiskGauge";
-import { IncidentFeedTable } from "@/components/dashboard/IncidentFeedTable";
+import { LiveIncidentFeed } from "@/components/dashboard/LiveIncidentFeed";
 import { prisma } from "@/lib/prisma";
 import type { DlpAlert, DlpSeverity } from "@/types";
 
@@ -79,7 +79,7 @@ export default async function Home() {
             <RiskGauge score={snapshot.riskScore} />
           </div>
           <div className="lg:col-span-3">
-            <IncidentFeedTable alerts={snapshot.alerts} />
+            <LiveIncidentFeed initialAlerts={snapshot.alerts} />
           </div>
         </div>
       </div>

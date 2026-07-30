@@ -57,4 +57,61 @@ export async function setPolicy(update: Partial<SystemPolicy>, updatedBy?: strin
   return getPolicy();
 }
 
+// Shared between the REST OTA endpoint (src/app/api/policies/route.ts)
+// and the WebSocket dashboard-message handler (server.ts). Shape here
+// must stay in sync with the allow-listed fields
+// extension/background/background.js's handleRemoteMessage() accepts —
+// that function deliberately rejects anything outside these keys and
+// never executes code from a policy payload.
+
+const ALLOWED_KEYS: (keyof SystemPolicy)[] = [
+  "dlpEnabled",
+  "transmitEvents",
+  "sensitivePatterns",
+  "heartbeatIntervalMs",
+  "wsEndpoint",
+];
+
+function isValidPatternList(value: unknown): value is SensitivePatternRule[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        typeof (item as SensitivePatternRule).name === "string" &&
+        typeof (item as SensitivePatternRule).pattern === "string"
+    )
+  );
+}
+
+export function sanitizePolicyUpdate(body: unknown): Partial<SystemPolicy> | null {
+  if (!body || typeof body !== "object") return null;
+  const raw = body as Record<string, unknown>;
+  const update: Partial<SystemPolicy> = {};
+
+  for (const key of ALLOWED_KEYS) {
+    if (!(key in raw)) continue;
+    const value = raw[key];
+
+    switch (key) {
+      case "dlpEnabled":
+      case "transmitEvents":
+        if (typeof value === "boolean") update[key] = value;
+        break;
+      case "heartbeatIntervalMs":
+        if (typeof value === "number" && value >= 1000) update[key] = value;
+        break;
+      case "wsEndpoint":
+        if (typeof value === "string") update[key] = value;
+        break;
+      case "sensitivePatterns":
+        if (isValidPatternList(value)) update[key] = value;
+        break;
+    }
+  }
+
+  return update;
+}
+
 export type { SensitivePatternRule };

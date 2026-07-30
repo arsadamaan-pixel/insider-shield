@@ -78,9 +78,9 @@ async function getOrgKey() {
 }
 
 // --- WebSocket client -------------------------------------------------
-// Best-effort only. No backend exists yet at wsEndpoint (Phase 3 work),
-// so this is expected to fail and retry with backoff rather than
-// connect successfully for now.
+// Connects to the real-time transport server (server.ts) at wsEndpoint,
+// identifying itself as an agent-role connection via ?role=agent so the
+// server can route it separately from dashboard-role connections.
 
 const wsClient = {
   socket: null,
@@ -112,7 +112,9 @@ async function connectWebSocket(policy) {
 
   wsClient.state = "connecting";
   try {
-    wsClient.socket = new WebSocket(effectivePolicy.wsEndpoint);
+    const url = new URL(effectivePolicy.wsEndpoint);
+    url.searchParams.set("role", "agent");
+    wsClient.socket = new WebSocket(url.toString());
   } catch (err) {
     console.warn("[Insider-Shield] failed to construct WebSocket:", err);
     scheduleReconnect(effectivePolicy);

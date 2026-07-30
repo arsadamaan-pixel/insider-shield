@@ -274,3 +274,140 @@
   now tracks `origin/main`.
 
 **Status: Phase 1–3 (through SQLite Data Persistence) pushed to `origin/main` on GitHub (`insider-shield`, private).**
+
+## 2026-07-30 — Phase 3: Real-Time WebSocket Transport Engine
+
+- `server.ts` (repo root, new): a custom Node server wrapping the
+  Next.js App Router — `next({dev})`, `app.getRequestHandler()`,
+  `createServer((req,res) => handle(req,res))` — exactly the recipe in
+  `node_modules/next/dist/docs/01-app/02-guides/custom-server.md` (read
+  in full first, per `AGENTS.md`'s instruction to check the bundled docs
+  before writing custom-server code for this Next version). Attaches a
+  `ws` `WebSocketServer({ noServer: true })` plus a manual
+  `server.on('upgrade', ...)` listener scoped to `/api/ws` only; every
+  other upgrade path (Turbopack's dev-mode HMR websocket in particular)
+  is left untouched. Read `next/dist/server/next.js` to confirm this is
+  safe: `getRequestHandler()`'s returned function self-attaches Next's
+  *own* `'upgrade'` listener onto our `http.Server` the first time a
+  request goes through `handle()` (`setupWebSocketHandler`, keyed off
+  `req.socket.server`), so nothing needs to be manually forwarded to
+  Next — our listener just has to no-op on non-`/api/ws` paths. Verified
+  live: `[HMR] connected` still appears in the browser console with the
+  custom server running.
+- Connections are classified by a `?role=agent|dashboard` query param
+  parsed at upgrade time; anything else gets a `400` and the socket is
+  destroyed before `wss.handleUpgrade`. Two `Set<WebSocket>` registries
+  (`agentSockets`, `dashboardSockets`); on close, removed from both
+  (harmless no-op on whichever set it wasn't in).
+- Dev runner: `tsx watch server.ts`, **not** `ts-node-dev` as originally
+  requested — `tsx` was already a working devDependency here (runs
+  `prisma/seed.ts` with this exact `esnext`/`bundler`/`@/*`-alias
+  tsconfig), while `ts-node-dev` would have needed an added
+  `tsconfig-paths` dependency to resolve the `@/*` alias and sees little
+  ongoing maintenance. Confirmed with the user before deviating from the
+  literal request.
+- Shared validation/persistence logic factored out so the WS handlers
+  and the pre-existing REST routes can't drift apart:
+  - `src/lib/telemetryIngest.ts` (new): `RULE_SEVERITY`,
+    `isValidDlpEvent`/`isValidHeartbeat` (moved out of
+    `telemetry/route.ts`, now exported), plus new `ingestDlpEvent()`
+    (persists via Prisma, resolves `employeeName` via
+    `prisma.employee.findUnique`, returns the full `DlpAlert` shape) and
+    `ingestHeartbeat()`. `telemetry/route.ts`'s POST now just validates
+    and delegates; GET/external behavior unchanged.
+  - `src/lib/policyStore.ts`: `ALLOWED_KEYS`/`isValidPatternList`
+    (moved, private) plus a newly-exported `sanitizePolicyUpdate()`
+    (was `policies/route.ts`'s local `sanitizeUpdate`, logic unchanged).
+    `policies/route.ts`'s POST now just validates and delegates.
+- `src/types/websocket.ts` (new, barrel-exported via `src/types/index.ts`):
+  `WsRole`, `DlpAlertMessage`, `PolicyUpdateMessage` (server→client,
+  always the *full* resulting `SystemPolicy`), `PolicyUpdateRequestMessage`
+  (client→server, a *partial* update — kept as a distinct type from
+  `PolicyUpdateMessage` since the two directions carry different
+  shapes despite sharing a `"policy_update"` discriminant),
+  `ServerToDashboardMessage`, `ServerToAgentMessage`,
+  `DashboardToServerMessage`.
+- Broadcast behavior: agent `dlp_event` → `ingestDlpEvent()` →
+  `{type:"dlp_alert", alert}` to all dashboard sockets only (heartbeats
+  are persisted but not broadcast — matches the literal "broadcast
+  sanitized, real-time alert events" scope, not heartbeats). Dashboard
+  `policy_update` → `sanitizePolicyUpdate()` → `setPolicy()` →
+  `{type:"policy_update", policy}` (the full post-update policy) to
+  **both** all agent sockets and all other dashboard sockets, so a
+  second open dashboard tab stays in sync for free.
+- `src/lib/useWebSocket.ts` (new): `useWebSocket({role, onMessage,
+  enabled?})` client hook. URL derived from `window.location`
+  (same-origin `/api/ws?role=dashboard`), deliberately not from
+  `policy.wsEndpoint` — that field is the *agent's* configured endpoint,
+  which may be a different origin in enterprise deployments. Reconnect
+  backoff mirrors `extension/background/background.js`'s constants
+  (1s base, 60s cap, ~30% jitter) for consistency across both transport
+  clients. Latest `onMessage` kept in a ref so the connect/cleanup
+  effect doesn't tear down and reconnect on every render from a fresh
+  inline callback; a `closedByCleanupRef` guards against React Strict
+  Mode's dev-mode double-invoke leaving an orphan reconnect timer from a
+  discarded first mount. `send()` returns `false` (never throws) when
+  the socket isn't open, so callers can fall back to REST.
+- `src/components/dashboard/LiveIncidentFeed.tsx` (new, `"use client"`):
+  wraps the existing `IncidentFeedTable` (unchanged), takes
+  `initialAlerts` from the server-rendered snapshot, merges incoming
+  `dlp_alert` messages (dedup by `id`, capped at 20 rows — same limit
+  `page.tsx` already queries), shows a small live/reconnecting
+  indicator. `src/app/page.tsx` swaps in this component in place of the
+  old direct `<IncidentFeedTable>` call; metric cards and the risk gauge
+  stay server-rendered snapshot values on this pass (not live-updated —
+  kept the diff focused on the incident feed, which is what "live alert
+  feeds" in the request was about).
+- `src/components/policies/PolicyControlPanel.tsx` (new, `"use client"`):
+  a minimal edit panel for `dlpEnabled`/`transmitEvents`/
+  `heartbeatIntervalMs` (chosen as the three highest-value/highest-
+  frequency fields; `sensitivePatterns`/`wsEndpoint` editing stays out
+  of scope, left for the fuller Phase 4 Policies UI). Pushes
+  `policy_update` over the dashboard-role socket on Save, with a
+  `POST /api/policies` REST fallback when `send()` returns `false`
+  (socket not open). Built now rather than deferred, per explicit user
+  confirmation — `policies/page.tsx` had *no* edit UI at all before
+  this, so "handle policy_update events emitted from dashboard clients"
+  had nothing real to test against without it.
+- `extension/background/background.js`: `connectWebSocket()` now builds
+  the WS URL via `new URL(effectivePolicy.wsEndpoint)` +
+  `searchParams.set("role", "agent")` instead of passing
+  `wsEndpoint` straight through — previously **zero** query params were
+  ever sent, so no real extension connection would have been classified
+  by the new server at all. Scoped to this one change; the separate,
+  pre-existing `getOrgKey()`/org-identity gap (heartbeat/dlp_event
+  payloads never carry `orgKey` despite the type allowing one) is
+  unchanged.
+- `package.json`: added `ws` (runtime dependency) and `@types/ws`
+  (devDependency); `"dev"` changed from `"next dev"` to
+  `"tsx watch server.ts"`. `build`/`start` left untouched — production
+  wiring is separate Phase 5 work (see `PLAN.md`).
+- **Verified end-to-end**, not just type-checked: `npm run lint` and
+  `npx tsc --noEmit` both clean. Local DB didn't exist yet in this fresh
+  checkout (`node_modules` and `dev.db` are both gitignored) — created
+  `.env` with `DATABASE_URL="file:./dev.db"`, ran
+  `npx prisma migrate deploy` and `npm run db:seed` before the dashboard
+  pages would render. With `npm run dev` running: a scratch `ws`-based
+  Node client connected as `role=agent`, sent a `heartbeat` and a
+  `dlp_event` — both persisted (`GET /api/telemetry` reflected them
+  immediately). With a real browser open on `/` via Playwright, sending
+  a further `dlp_event` from the scratch agent client made the new row
+  appear in the Incident Feed **without a page reload**. A second
+  scratch client connected as `role=dashboard`, sent a `policy_update`
+  — persisted, and pushed live to a concurrently-connected `role=agent`
+  scratch listener. In the real browser on `/policies`, toggled the new
+  Policy Control Panel's checkboxes and clicked "Push Update" — UI
+  confirmed "Pushed via WebSocket," `GET /api/policies` reflected the
+  change. A connection with no `role` (or an invalid one) got rejected
+  with HTTP 400 rather than silently accepted. Reset `dlpEnabled`/
+  `transmitEvents` back to `false` afterward so the kill switch wasn't
+  left flipped on from testing (same practice as the earlier
+  SQLite-persistence testing entry above).
+- Still open, carried forward: `build`/`start` don't run `server.ts` in
+  production (Phase 5); Vercel specifically can't hold long-lived
+  WebSocket upgrades, so production hosting needs its own decision
+  later, not just reusing this server as-is; extension `getOrgKey()`/
+  org-identity is still unwired (single implicit tenant only); Policy
+  Control Panel intentionally covers only 3 of 5 `SystemPolicy` fields.
+
+**Status: Phase 3 — Dashboard & Ingestion Foundation is now fully COMPLETE.** All of Phase 1–3 pushed and verified; Phase 4 (Detection, Geo-Compliance & Dashboard UX) is next.
