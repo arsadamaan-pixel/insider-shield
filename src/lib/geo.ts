@@ -55,3 +55,19 @@ export function geoForEmployee(employee: { id: string }): GeoLocation {
     lng: base.lng + (rand() - 0.5) * 0.5,
   };
 }
+
+// Prefers a real MaxMind lookup of the employee's last known IP
+// (src/lib/geoip.ts); falls back to the deterministic mock above when
+// no GeoIP database is configured, the IP is private/unset, or nothing
+// matched. Returns whether the result is real so callers (the Asset Map)
+// can visually flag approximate positions instead of silently mixing
+// real and fake data.
+export async function resolveEmployeeGeo(employee: {
+  id: string;
+  lastKnownIp: string | null;
+}): Promise<{ location: GeoLocation; approximate: boolean }> {
+  const { lookupIp } = await import("@/lib/geoip");
+  const real = await lookupIp(employee.lastKnownIp);
+  if (real) return { location: real, approximate: false };
+  return { location: geoForEmployee(employee), approximate: true };
+}

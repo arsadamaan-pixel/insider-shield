@@ -99,6 +99,16 @@ export async function revokeProvisioningToken(id: string) {
   });
 }
 
+export async function renameProvisioningToken(id: string, deviceName: string) {
+  const existing = await prisma.provisioningToken.findUnique({ where: { id } });
+  if (!existing) return null;
+
+  return prisma.provisioningToken.update({
+    where: { id },
+    data: { deviceName },
+  });
+}
+
 export interface AgentCredentialResult {
   valid: boolean;
   // Set only when a per-device provisioning token (not the static

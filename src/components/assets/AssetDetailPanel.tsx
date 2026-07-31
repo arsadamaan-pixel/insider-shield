@@ -50,6 +50,9 @@ export function AssetDetailPanel({ asset, onClose }: { asset: AssetEndpoint | nu
         <dt className="text-slate-500">Location</dt>
         <dd className="text-slate-300">
           {asset.location.city}, {asset.location.country}
+          {asset.approximate && (
+            <span className="ml-1.5 text-amber-500/80">(approximate — no GeoIP match)</span>
+          )}
         </dd>
       </dl>
     </div>

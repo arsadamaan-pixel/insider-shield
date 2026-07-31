@@ -40,8 +40,17 @@ export interface AuditLogMessage {
   entry: AuditLogEntry;
 }
 
+// Sent whenever an agent connects, disconnects, or an admin
+// deletes/renames one — a content-free ping. The Endpoints page reacts
+// by re-fetching via router.refresh() rather than trusting a pushed
+// payload, since listConnectedAgents()'s status is derived relative to
+// "now" at read time and would go stale between broadcast and render.
+export interface AgentsChangedMessage {
+  type: "agents_changed";
+}
+
 // Messages the server pushes to dashboard-role sockets.
-export type ServerToDashboardMessage = DlpAlertMessage | PolicyUpdateMessage | AuditLogMessage;
+export type ServerToDashboardMessage = DlpAlertMessage | PolicyUpdateMessage | AuditLogMessage | AgentsChangedMessage;
 
 // Messages the server pushes to agent-role sockets.
 export type ServerToAgentMessage = PolicyUpdateMessage | TerminateSessionMessage;

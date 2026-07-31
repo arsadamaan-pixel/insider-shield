@@ -10,6 +10,13 @@ export interface AssetEndpoint {
   employeeEmail: string;
   managedDeviceId: string;
   location: GeoLocation;
+  // True when no real GeoIP match was available (no GEOIP_DB_PATH
+  // configured, a private/unset IP, or no match in the database) and
+  // `location` is the deterministic mock fallback instead — see
+  // src/lib/geo.ts's resolveEmployeeGeo(). Surfaced in the UI so a real
+  // and a fake position are never visually indistinguishable on a
+  // geo-compliance map.
+  approximate: boolean;
   compliant: boolean;
   os: string | null;
   ipAddress: string | null;

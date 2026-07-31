@@ -30,11 +30,17 @@ export function LeafletMap({ assets, selectedId, onSelect }: LeafletMapProps) {
               fillColor: asset.compliant ? "#10b981" : "#ef4444",
               fillOpacity: 0.6,
               weight: asset.id === selectedId ? 3 : 1.5,
+              // Dashed outline for mock-fallback positions (no real GeoIP
+              // match) so an approximate marker is never visually
+              // indistinguishable from a real one on the map itself, not
+              // only in the detail panel.
+              dashArray: asset.approximate ? "4 3" : undefined,
             }}
             eventHandlers={{ click: () => onSelect(asset) }}
           >
             <Tooltip>
               {asset.employeeName} — {asset.compliant ? "Compliant" : "Violation"}
+              {asset.approximate ? " (approximate)" : ""}
             </Tooltip>
           </CircleMarker>
         ))}

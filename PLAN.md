@@ -494,10 +494,91 @@ before a first real deploy.
   .writeText()` headlessly without it, caught by the new Copy-button
   test.
 
+### Phase 9 — Endpoints Lifecycle, Real GeoIP & Live Sync — ✅ COMPLETE
+- [x] **Real GeoIP, mock-safe.** New `src/lib/geoip.ts`: lazily opens a
+      local MaxMind GeoLite2-City `.mmdb` (new `maxmind` dependency,
+      pure-JS reader, no native bindings) from the optional
+      `GEOIP_DB_PATH` env var, `globalThis`-cached like `prisma.ts`.
+      Chosen over a third-party lookup API specifically because IPs
+      never leave the server — a real consideration for a DLP product
+      handling employee IPs. Missing env var / missing file / a corrupt
+      DB / a private-or-reserved IP (RFC1918, loopback, link-local,
+      unique-local) all resolve to "no match" rather than throwing.
+      `geo.ts`'s new `resolveEmployeeGeo()` tries a real lookup against
+      `Employee.lastKnownIp` first, falling back to the pre-existing
+      deterministic mock-city generator. `AssetEndpoint` gained an
+      `approximate: boolean` so the Asset Map never silently mixes real
+      and mock positions — approximate markers get a dashed outline on
+      the map and a "(approximate — no GeoIP match)" label in the
+      detail panel. No `GEOIP_DB_PATH` is configured yet (requires the
+      user to create a free MaxMind account and license key), so every
+      marker is currently flagged approximate — verified this renders
+      correctly with zero errors, proving the absent-DB path is safe.
+- [x] **Permanent delete.** `POST /api/admin/agents/delete`
+      (dashboard-session only): deletes the endpoint's `Heartbeat` rows
+      and, when it authenticated with a per-device `ProvisioningToken`,
+      revokes that token too (reusing Phase 8's
+      `revokeProvisioningToken()`/`terminateTokenSessions()`) so it
+      can't silently reappear. A shared-org-key endpoint (no token)
+      only has its heartbeats deleted — there's no per-device credential
+      to revoke, and the confirmation dialog's copy says so. Audit-logged
+      as `endpoint_deleted` (added to `AUDIT_ACTIONS`).
+- [x] **Rename.** `POST /api/admin/agents/rename` updates a token-based
+      endpoint's `deviceName` (new `renameProvisioningToken()` in
+      `agentTokens.ts`); shared-org-key rows have no per-device row to
+      rename, so the UI hides the action for them. Audit-logged as
+      `endpoint_renamed`.
+- [x] **Live sync, honestly scoped.** New `agents_changed` WS message
+      (no payload — the client re-fetches via `router.refresh()` rather
+      than trust a pushed snapshot, since `listConnectedAgents()`'s
+      status is derived relative to "now" at read time). Broadcast from
+      `wsRegistry.ts` the instant an agent socket opens or closes, and
+      from the new delete/rename routes — replacing the Endpoints page's
+      old 15s poll (`AutoRefresh.tsx`, removed) with a new
+      `EndpointsLiveSync.tsx` that debounces incoming broadcasts ~1.5s
+      and keeps a 60s safety-net poll for the purely clock-driven
+      online→stale→offline aging (not an event, so it can't be pushed)
+      and for a missed WS message. Deliberately **not** broadcast on
+      every heartbeat (~20s/agent) — only on connect/disconnect/admin
+      action — to avoid the traffic multiplier `AutoRefresh.tsx`'s own
+      original comment already flagged as not worth it for a timestamp
+      tick.
+- [x] **Bug caught and fixed during manual verification, not by
+      type-checking:** `AgentTable.tsx` (converted to a client component
+      for the new row actions, mirroring `EmployeeTable.tsx`'s
+      `useState(initialX)` pattern) initially froze its row list at
+      first mount — `EmployeeTable`'s parent page never triggers
+      `router.refresh()`, but `EndpointsLiveSync` now does, and
+      `useState`'s initial value doesn't re-sync to new props on its
+      own. Metric cards above the table (read directly from the server
+      component's render) updated live while the table silently didn't.
+      Fixed with a `useEffect` resyncing local state to the `agents`
+      prop on every change. Caught by actually watching a live WS-driven
+      update in a browser rather than trusting the type-check.
+- [x] **Verified end-to-end** against a running dev server (not just
+      code review): connected/disconnected raw `ws` agent clients and
+      watched the Endpoints table update with no manual refresh;
+      renamed and deleted both a token-based and a shared-org-key
+      endpoint through the actual UI, confirming the token-revoked vs.
+      heartbeats-only copy differs correctly and that deletion produces
+      matching `endpoint_deleted`/`endpoint_renamed` audit rows; confirmed
+      a revoked token shows `status: "revoked"` via the Provisioning
+      API afterward.
+- Along the way: this MacBook's local `dev.db` and `node_modules` had
+  drifted from what Phase 7/8 (built on the Ubuntu machine) actually
+  need — `@prisma/adapter-libsql`/`@libsql/client` were missing from
+  `node_modules` (fixed with `npm install`) and the
+  `add_heartbeat_token_id` migration had never been applied locally
+  (fixed with `npx prisma migrate deploy`). Neither is a code change,
+  just environment catch-up; noted here since it cost real debugging
+  time and will recur on any machine that only ever `git pull`s.
+
 ## Active Milestone
 
-**Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation**
-is complete as of 2026-07-31. Phase 7 remains "configuration-ready"
-(Docker build and Turso migration path still unverified pending a real
-Docker daemon/Turso account). Phase 5's legal/compliance review is the
-only other item still open across all eight phases.
+**Phase 9 — Endpoints Lifecycle, Real GeoIP & Live Sync** is complete
+as of 2026-07-31. Real GeoIP is wired end-to-end but inactive until a
+`GEOIP_DB_PATH` is actually configured (requires a free MaxMind
+account/license key — an external step, not something to automate).
+Phase 7 remains "configuration-ready" (Docker build and Turso migration
+path still unverified pending a real Docker daemon/Turso account).
+Phase 5's legal/compliance review is the only other item still open.

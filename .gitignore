@@ -55,3 +55,9 @@ next-env.d.ts
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# geoip database (binary, licensed download — see .env.example)
+*.mmdb
+
+# Playwright MCP browser-driving scratch output (not the test suite)
+/.playwright-mcp/

@@ -1,3 +1,9 @@
+"use client";
+
+import { useState } from "react";
+import { Pencil, Trash2 } from "lucide-react";
+import { DeleteEndpointModal } from "@/components/agents/DeleteEndpointModal";
+import { RenameEndpointModal } from "@/components/agents/RenameEndpointModal";
 import type { AgentStatus, ConnectedAgent } from "@/types";
 
 const STATUS_STYLES: Record<AgentStatus, string> = {
@@ -19,7 +25,34 @@ function formatLastSeen(iso: string) {
   return `${Math.round(seconds / 3600)}h ago`;
 }
 
-export function AgentTable({ agents }: { agents: ConnectedAgent[] }) {
+export function AgentTable({ agents: initialAgents }: { agents: ConnectedAgent[] }) {
+  const [agents, setAgents] = useState(initialAgents);
+  const [prevInitialAgents, setPrevInitialAgents] = useState(initialAgents);
+  const [renameTarget, setRenameTarget] = useState<ConnectedAgent | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ConnectedAgent | null>(null);
+
+  // Unlike EmployeeTable.tsx (its parent page has no live-refresh
+  // source), this table's parent re-renders on every EndpointsLiveSync
+  // router.refresh() with a freshly computed `agents` array — useState's
+  // initial value alone would freeze the table at first mount and never
+  // pick those up, even though the metric cards above it (read directly
+  // from the server component's own render) would keep updating.
+  // Resyncing during render (React's documented pattern for this,
+  // https://react.dev/learn/you-might-not-need-an-effect) instead of in
+  // a useEffect avoids an extra commit/cascading render on every refresh.
+  if (initialAgents !== prevInitialAgents) {
+    setPrevInitialAgents(initialAgents);
+    setAgents(initialAgents);
+  }
+
+  function handleRenamed(key: string, deviceName: string) {
+    setAgents((prev) => prev.map((a) => (a.key === key ? { ...a, deviceName } : a)));
+  }
+
+  function handleDeleted(key: string) {
+    setAgents((prev) => prev.filter((a) => a.key !== key));
+  }
+
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/60">
       <div className="border-b border-slate-800 px-4 py-3">
@@ -36,6 +69,7 @@ export function AgentTable({ agents }: { agents: ConnectedAgent[] }) {
               <th className="px-4 py-2 font-medium">Status</th>
               <th className="px-4 py-2 font-medium">Last Seen</th>
               <th className="px-4 py-2 font-medium">Pings</th>
+              <th className="px-4 py-2 font-medium" />
             </tr>
           </thead>
           <tbody>
@@ -79,11 +113,33 @@ export function AgentTable({ agents }: { agents: ConnectedAgent[] }) {
                 </td>
                 <td className="px-4 py-2 text-slate-500">{formatLastSeen(agent.lastSeenAt)}</td>
                 <td className="px-4 py-2 text-slate-500">{agent.heartbeatCount}</td>
+                <td className="px-4 py-2">
+                  <div className="flex justify-end gap-1">
+                    {agent.tokenId && (
+                      <button
+                        type="button"
+                        onClick={() => setRenameTarget(agent)}
+                        title="Rename device"
+                        className="rounded-md border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(agent)}
+                      title="Permanently delete endpoint"
+                      className="rounded-md border border-red-500/30 p-1.5 text-red-400 hover:bg-red-500/10"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </td>
               </tr>
             ))}
             {agents.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-sm text-slate-500">
+                <td colSpan={8} className="px-4 py-6 text-center text-sm text-slate-500">
                   No endpoint agents have reported in the last 24 hours. Generate a token on the Agent
                   Provisioning page and configure an extension with it.
                 </td>
@@ -92,6 +148,13 @@ export function AgentTable({ agents }: { agents: ConnectedAgent[] }) {
           </tbody>
         </table>
       </div>
+
+      {renameTarget && (
+        <RenameEndpointModal agent={renameTarget} onClose={() => setRenameTarget(null)} onRenamed={handleRenamed} />
+      )}
+      {deleteTarget && (
+        <DeleteEndpointModal agent={deleteTarget} onClose={() => setDeleteTarget(null)} onDeleted={handleDeleted} />
+      )}
     </div>
   );
 }

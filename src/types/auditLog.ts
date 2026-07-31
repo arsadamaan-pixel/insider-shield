@@ -22,6 +22,8 @@ export const AUDIT_ACTIONS = [
   "dashboard_auth_failed",
   "provisioning_token_created",
   "provisioning_token_revoked",
+  "endpoint_deleted",
+  "endpoint_renamed",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

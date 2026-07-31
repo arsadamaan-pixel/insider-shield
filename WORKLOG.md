@@ -1653,3 +1653,75 @@ Mac `better-sqlite3` must be rebuilt for arm64 via `npm install` +
    and wouldn't hold across multiple instances.
 
 **Status: Clean handoff point — no uncommitted work, no half-finished changes.**
+
+## 2026-07-31 — Phase 9: Endpoints lifecycle, real GeoIP, live sync
+
+Continuing on the MacBook from the handoff above. The user checked the
+Endpoints page and asked why there was no delete/edit option, then asked
+for permanent delete/edit, real geolocation, and instant sync of an
+agent's online status into both Endpoints and the dashboard — a real
+feature bundle, not a tweak, so this went through a proper plan
+(`EnterPlanMode`) with four upfront decisions confirmed via
+`AskUserQuestion` before writing any code: local MaxMind GeoLite2-City
+over a third-party geolocation API (IPs never leave the server — a real
+concern for a DLP product), delete = heartbeats + token revoke, edit =
+device name only, live sync scoped to the Endpoints page.
+
+**Environment catch-up before any of this could even run:** this
+machine's `node_modules` and `dev.db` predate Phase 7/8 (built on the
+Ubuntu box) — `npm run dev` crashed on a missing `@prisma/adapter-libsql`
+until `npm install`, and the Endpoints page then 500'd with `The column
+main.Heartbeat.tokenId does not exist` until `npx prisma migrate deploy`
+applied the two migrations that had only ever been applied on Ubuntu.
+Neither is a code bug; both are exactly the "git pull isn't enough"
+gap README.md's cross-machine section already warned about, just
+encountered here instead of anticipated.
+
+**What was built** (see `PLAN.md`'s Phase 9 for the full breakdown):
+`src/lib/geoip.ts` (MaxMind reader, private/reserved-IP filtering,
+absent-DB-safe), `resolveEmployeeGeo()` in `geo.ts` with a new
+`approximate` flag surfaced on the Asset Map (dashed marker outline +
+detail-panel label) so real and mock positions are never visually
+indistinguishable; `POST /api/admin/agents/delete` and
+`/api/admin/agents/rename`; a new `agents_changed` WS broadcast fired
+from `wsRegistry.ts` on agent connect/disconnect (not on every
+heartbeat — deliberately, to avoid the traffic multiplier
+`AutoRefresh.tsx`'s own original comment already called out) and from
+the two new routes; `EndpointsLiveSync.tsx` replacing the old 15s poll
+with WS-push plus a 60s safety-net poll for the purely clock-driven
+stale/offline aging that can't be an event; `AgentTable.tsx` converted
+to a client component with Rename/Delete row actions and two new modal
+components mirroring `OffboardModal.tsx`'s existing shape.
+
+**A real bug caught by manually watching the browser, not by
+`tsc`/lint (both stayed clean throughout):** `AgentTable.tsx` copied
+`EmployeeTable.tsx`'s `useState(initialAgents)` pattern, but unlike
+Users, Endpoints now has a live-refresh source — `useState`'s initial
+value doesn't resync to new props on its own, so the metric cards above
+the table updated live while the table itself silently froze at first
+mount. Only visible by actually triggering a live update and watching
+for the mismatch (Online: 1 / Heartbeats: 1 while the table still read
+"No endpoint agents..."). Fixed with a `useEffect` resyncing local state
+to the `agents` prop whenever it changes.
+
+**Verification performed** (against the local dev server, via
+Playwright MCP browser driving + raw `ws` scripts simulating agent
+traffic, not just code review): connected/disconnected a shared-org-key
+agent and watched its row appear/update with no manual refresh;
+generated a real provisioning token via the Provisioning API, connected
+an agent with it, renamed it through the actual UI dialog, deleted it,
+and confirmed both the `endpoint_renamed`/`endpoint_deleted` audit rows
+and that the token's status flipped to `revoked` via
+`GET /api/admin/provision-token` afterward; deleted a shared-org-key
+row and confirmed the confirmation copy correctly said there was no
+token to revoke; loaded `/assets` with no `GEOIP_DB_PATH` configured
+and confirmed every marker rendered with the dashed "approximate"
+styling and no console errors, proving the no-GeoIP-DB path is safe.
+
+Real GeoIP is wired end-to-end but not yet active on any machine — it
+needs a free MaxMind account/license key (documented in
+`.env.example`), which is an account-signup step for the user, not
+something to script.
+
+**Status: Phase 9 complete, `tsc --noEmit` and `npm run lint` clean.
+Not yet committed — pending user review.**

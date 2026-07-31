@@ -72,6 +72,13 @@ export function registerConnection(
     agentSocketsByTokenId.set(tokenId, set);
   }
 
+  // Lets the Endpoints page react instantly to an agent coming online —
+  // see EndpointsLiveSync.tsx. Not mirrored for dashboard-role sockets;
+  // nothing on the Endpoints view depends on which dashboards are open.
+  if (role === "agent") {
+    broadcast(dashboardSockets, { type: "agents_changed" });
+  }
+
   ws.on("close", () => {
     agentSockets.delete(ws);
     dashboardSockets.delete(ws);
@@ -87,6 +94,12 @@ export function registerConnection(
       if (set && set.size === 0) agentSocketsByTokenId.delete(identity.tokenId);
     }
     registry.socketIdentity.delete(ws);
+
+    // Mirrors the on-connect broadcast above — an agent going offline is
+    // just as visible on the Endpoints page as one coming online.
+    if (identity?.role === "agent") {
+      broadcast(dashboardSockets, { type: "agents_changed" });
+    }
   });
 }
 

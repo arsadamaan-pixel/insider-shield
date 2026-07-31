@@ -1,7 +1,7 @@
 import { Header } from "@/components/layout/Header";
 import { AssetMap } from "@/components/assets/AssetMap";
 import { prisma } from "@/lib/prisma";
-import { geoForEmployee } from "@/lib/geo";
+import { resolveEmployeeGeo } from "@/lib/geo";
 import type { AssetEndpoint } from "@/types";
 
 // Reads live employee/heartbeat/alert state from SQLite — must not be
@@ -33,17 +33,23 @@ async function loadAssets(): Promise<AssetEndpoint[]> {
     latestByEmail.set(hb.employeeEmail, os);
   }
 
-  return employees.map((employee) => ({
-    id: employee.id,
-    employeeName: employee.name,
-    employeeEmail: employee.email,
-    managedDeviceId: employee.managedDeviceId as string,
-    location: geoForEmployee(employee),
-    compliant: !violatingEmails.has(employee.email),
-    os: latestByEmail.get(employee.email) ?? null,
-    ipAddress: employee.lastKnownIp,
-    lastHeartbeat: employee.lastSeenAt ? employee.lastSeenAt.toISOString() : null,
-  }));
+  return Promise.all(
+    employees.map(async (employee) => {
+      const { location, approximate } = await resolveEmployeeGeo(employee);
+      return {
+        id: employee.id,
+        employeeName: employee.name,
+        employeeEmail: employee.email,
+        managedDeviceId: employee.managedDeviceId as string,
+        location,
+        approximate,
+        compliant: !violatingEmails.has(employee.email),
+        os: latestByEmail.get(employee.email) ?? null,
+        ipAddress: employee.lastKnownIp,
+        lastHeartbeat: employee.lastSeenAt ? employee.lastSeenAt.toISOString() : null,
+      };
+    })
+  );
 }
 
 export default async function AssetsPage() {

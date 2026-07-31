@@ -1,6 +1,6 @@
 import { Header } from "@/components/layout/Header";
 import { AgentTable } from "@/components/agents/AgentTable";
-import { AutoRefresh } from "@/components/agents/AutoRefresh";
+import { EndpointsLiveSync } from "@/components/agents/EndpointsLiveSync";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { listConnectedAgents } from "@/lib/agents";
 import { prisma } from "@/lib/prisma";
@@ -41,7 +41,7 @@ export default async function EndpointsPage() {
               Agents that have reported in the last 24 hours, whether or not their identity matches a
               known employee.
             </p>
-            <AutoRefresh />
+            <EndpointsLiveSync />
           </div>
           <AgentTable agents={agents} />
         </div>
