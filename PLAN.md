@@ -405,14 +405,27 @@ before a first real deploy.
       database string is invalid. The scheme is not recognized`,
       reproduced locally), only the generated Client's driver-adapter
       system does. `scripts/deploy-migrations.ts` instead applies each
-      migration's raw SQL directly via `@libsql/client`'s
-      `executeMultiple()` for a `libsql`/`http(s)` `DATABASE_URL`
-      (falling back to `prisma migrate deploy` for a plain `file:`
-      URL, which does work). Either path only applies already-committed
-      migration files in order and fails loudly on a genuine conflict —
-      never a speculative destructive change. See `WORKLOG.md` for the
-      full reasoning, both fix attempts, and the Render
-      `preDeployCommand` alternative considered (and not used, due to
+      migration's SQL **statement by statement** via `@libsql/client`
+      for a `libsql`/`http(s)` `DATABASE_URL` (falling back to
+      `prisma migrate deploy` for a plain `file:` URL, which does
+      work), treating "already exists" as already-satisfied rather
+      than fatal — needed because production's `Employee` etc. tables
+      already existed from the original manual `turso db shell`
+      bootstrap, predating this tracking. **Second correction, same
+      day:** the first version of this script called
+      `executeMultiple()` per *file* and its statement filter
+      accidentally rejected every real statement (every one starts
+      with a `-- CreateTable`-style comment line) — meaning it would
+      have silently run zero SQL while marking every migration
+      "applied." Caught before pushing this time, with a permanent
+      regression test (`tests/deploy-migrations.spec.ts`) reproducing
+      the exact "some tables pre-exist" production scenario via
+      `@libsql/client`'s local `file:` mode. Either path only applies
+      already-committed migration files in order and fails loudly on a
+      genuine conflict — never a speculative destructive change. See
+      `WORKLOG.md` for the full reasoning, all fix attempts, and the
+      Render `preDeployCommand` alternative considered (and not used,
+      due to
       unclear Docker-runtime support in Render's own docs).
 
 ### Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation — ✅ COMPLETE

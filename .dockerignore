@@ -10,6 +10,8 @@ prisma/dev.db
 prisma/dev.db-*
 prisma/e2e-test.db
 prisma/e2e-test.db-*
+prisma/deploy-migrations-test.db
+prisma/deploy-migrations-test.db-*
 
 .env
 .env.local

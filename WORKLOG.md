@@ -1356,3 +1356,84 @@
   `docker build .` + a real Render redeploy as the next real check.
 
 **Status: The specific requested approach (`db push --accept-data-loss`) was declined for data-loss reasons (unchanged from the prior entry); the previously-implemented `prisma migrate deploy`-in-Docker fix was itself broken (confirmed by the real deploy failure) and has been replaced with a working direct-SQL-via-`@libsql/client` approach for Turso, verified locally against three scenarios. A redeploy is still needed to pick this up in production.**
+
+## 2026-07-31 — The `scripts/deploy-migrations.ts` fix from the previous entry was itself broken; fixed with real evidence and a real test this time
+
+- The Render deploy log for that fix (commit `17090dc`, shared as a
+  screenshot) showed the *real* failure, not a guess:
+  ```
+  [deploy-migrations] applying 20260730142128_init...
+  [deploy-migrations] failed: LibsqlError: SQL_INPUT_ERROR: SQLite
+  input error: table "Employee" already exists (at offset 28)
+  ```
+  Confirms what the very first debugging round in this saga originally
+  suspected, then I incorrectly "corrected" away: the production Turso
+  database already had `Employee`/`DlpAlert`/`SystemPolicy`/`Heartbeat`
+  — created manually via `turso db shell` during the original Phase 7
+  setup, before any of this migration tooling existed. The brand-new
+  `_deploy_migrations` tracking table starts empty, so it had no way of
+  knowing those tables already existed and tried to recreate them.
+- **Found and fixed two real bugs in the previous fix while verifying
+  it properly this time** (both would have made the *next* deploy fail
+  again, differently, if pushed as-is — caught before pushing, not
+  after, this time):
+  1. A mid-edit slip had deleted the `isRemoteLibsqlUrl()` function
+     definition entirely while its call site remained —
+     `ReferenceError: isRemoteLibsqlUrl is not defined` on the very
+     first direct-execution test.
+  2. `splitStatements()`'s filter (`!statement.startsWith("--")`)
+     rejected *every* real statement — every one in every migration
+     file starts with a `-- CreateTable`-style comment header line.
+     This meant the fix from the previous entry, if it had reached
+     that far, would have silently run **zero** SQL for every
+     migration while still marking each one as "applied" in
+     `_deploy_migrations` — a table quietly created, then permanently
+     hidden from view once the migration falsely mark itself done.
+     Caught by actually inspecting `splitStatements()`'s output against
+     the real migration files (7 chunks including 6 real statements for
+     the first file — the first debug attempt just logged "0
+     statements" and reasoning why led straight to the bug) rather than
+     assuming it worked because nothing threw.
+- Fixed `splitStatements()`: only drops a chunk if it has *no SQL
+  content at all* after stripping comment-only lines, not merely for
+  starting with `--`. A statement chunk like
+  `-- CreateTable\nCREATE TABLE "Employee" (...)` is exactly what every
+  real statement in these files looks like, and SQLite parses the
+  leading comment line fine as part of the statement text.
+- Reproduced the exact production scenario locally to confirm the real
+  fix, using `@libsql/client`'s local `file:` mode (a genuine libsql
+  client, just pointed at a local file instead of Turso — same code
+  path, no Turso account needed): pre-created only the `Employee` table
+  by hand, then ran the actual `applyViaLibsql()` function against it.
+  Result: `Employee`'s `CREATE TABLE` correctly logged as
+  "already satisfied, skipping this statement" and skipped, while
+  `DlpAlert`/`SystemPolicy`/`Heartbeat`/both indexes in that same
+  migration file — and every later migration, including
+  `ProvisioningToken`, the table whose absence caused the *original*
+  500 — were all created successfully. Ran the whole thing a second
+  time afterward to confirm idempotency (clean no-op, no errors).
+- Given two real bugs had just slipped through informal/manual
+  verification in a row, formalized this into a permanent test rather
+  than another disposable manual check:
+  `tests/deploy-migrations.spec.ts` (new) — exported `applyViaLibsql()`
+  from `scripts/deploy-migrations.ts` (guarded its `main()` invocation
+  behind `if (require.main === module)` so importing the function for
+  testing doesn't also trigger the script's own CLI behavior as an
+  import side effect) and added three cases: applies cleanly to a
+  brand-new database; running twice is idempotent; and — the one that
+  actually matters, reproducing this exact incident — recovers
+  correctly when some tables already exist from before this tracking
+  existed. All using the same local `file:` libsql mode, no Turso
+  account needed to run in CI or on any other machine.
+- Verified: `npm run build`, `npm run lint`, and the full Playwright
+  suite — **13/13 passing** (10 previous + 3 new), run twice in a row
+  for stability given the track record on this specific piece of code.
+- Not yet verified: an actual Render redeploy of this specific fix.
+  Given this is the *third* attempt at this exact migration-runner
+  problem and the first two both failed in production in different
+  ways, treat this as "should work, strongly locally verified" rather
+  than "confirmed" until a real deploy actually succeeds — that
+  distinction matters more here than anywhere else in this project so
+  far.
+
+**Status: Root cause (pre-existing production tables, untracked) identified from real deploy logs; two additional real bugs in the prior fix found and corrected before pushing again; behavior now covered by a permanent test using the same code path production uses. Still pending: an actual successful Render redeploy to close this out for real.**

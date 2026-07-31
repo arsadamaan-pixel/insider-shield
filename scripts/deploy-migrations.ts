@@ -22,10 +22,8 @@ import { createClient } from "@libsql/client";
 //    driver-adapter hook at all (checked @prisma/config's type
 //    definitions — its `datasource` shape is just `{url,
 //    shadowDatabaseUrl}`, nothing else). So for a libsql/Turso target,
-//    this applies each migration's raw SQL directly via
-//    `@libsql/client`'s `executeMultiple()` — documented by libsql
-//    itself as "intended to be used with existing SQL scripts, such as
-//    migrations" — tracking what's already been applied in a small
+//    this applies each migration's SQL statements one at a time via
+//    `@libsql/client`, tracking what's already been applied in a small
 //    tracking table of our own (`_deploy_migrations`, deliberately not
 //    named `_prisma_migrations` — this path doesn't use Prisma's own
 //    migration state at all, and pretending otherwise would be
@@ -36,6 +34,22 @@ import { createClient } from "@libsql/client";
 // `_deploy_migrations` here for libsql) — an inherent consequence of
 // Prisma Migrate not supporting libsql, not a design choice made for
 // its own sake.
+//
+// Statement-by-statement, not one executeMultiple() call per file, and
+// "already exists"/"duplicate column" errors are treated as already-
+// satisfied rather than fatal: the production Turso database already
+// had Employee/DlpAlert/SystemPolicy/Heartbeat (created manually via
+// `turso db shell` during initial setup, before this script existed) —
+// this table-by-table tracking has no record of that, and the first
+// real deploy failed outright on `CREATE TABLE "Employee"` because of
+// it. Running executeMultiple() per *file* would have the same
+// problem one level up: it aborts the whole file at the first failing
+// statement, so if only some of a migration's tables/columns already
+// exist, the rest (which may genuinely be missing) would never get a
+// chance to run. Per-statement is the only granularity that correctly
+// handles "some of this migration's effects already exist, some
+// don't" without either re-erroring on the former or skipping the
+// latter.
 
 const TRACKING_TABLE = "_deploy_migrations";
 
@@ -43,7 +57,45 @@ function isRemoteLibsqlUrl(url: string): boolean {
   return url.startsWith("libsql://") || url.startsWith("http://") || url.startsWith("https://");
 }
 
-async function applyViaLibsql(databaseUrl: string, authToken: string | undefined): Promise<void> {
+// Matches SQLite/libsql's wording for "this DDL was already applied"
+// (`table "X" already exists`, `index "X" already exists`, `duplicate
+// column name: X`) — deliberately narrow, so a genuinely different
+// error (a typo, a real syntax problem, a permissions issue) still
+// fails loudly instead of being silently swallowed.
+const ALREADY_APPLIED_PATTERNS = [/already exists/i, /duplicate column name/i];
+
+function isAlreadyAppliedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return ALREADY_APPLIED_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+// Splits a Prisma-generated migration.sql into individual statements.
+// Not a general-purpose SQL parser — relies on Prisma's own migration
+// files being simple DDL with no semicolons inside string literals
+// (true of every migration in prisma/migrations/ today; verified by
+// inspection, not assumed).
+function splitStatements(sql: string): string[] {
+  return sql
+    .split(/;\s*(?:\n|$)/)
+    .map((statement) => statement.trim())
+    .filter((statement) => {
+      if (statement.length === 0) return false;
+      // Every real statement here starts with a `-- CreateTable`-style
+      // comment header line — SQLite parses that fine as part of the
+      // statement text, so it must NOT be filtered out just for
+      // starting with "--". Only drop a chunk if it has no actual SQL
+      // content left after stripping comment-only lines (a defensive
+      // edge case, not expected in any current migration file).
+      const withoutComments = statement
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("--"))
+        .join("\n")
+        .trim();
+      return withoutComments.length > 0;
+    });
+}
+
+export async function applyViaLibsql(databaseUrl: string, authToken: string | undefined): Promise<void> {
   if (!authToken) {
     console.error(
       "[deploy-migrations] DATABASE_URL looks like a remote libsql/Turso URL but TURSO_AUTH_TOKEN is not set — refusing to proceed."
@@ -77,8 +129,21 @@ async function applyViaLibsql(databaseUrl: string, authToken: string | undefined
       if (!existsSync(sqlPath)) continue;
 
       console.log(`[deploy-migrations] applying ${folder}...`);
-      const sql = readFileSync(sqlPath, "utf8");
-      await client.executeMultiple(sql);
+      const statements = splitStatements(readFileSync(sqlPath, "utf8"));
+
+      for (const statement of statements) {
+        try {
+          await client.execute(statement);
+        } catch (err) {
+          if (isAlreadyAppliedError(err)) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[deploy-migrations] ${folder}: already satisfied (${message}), skipping this statement`);
+            continue;
+          }
+          throw err;
+        }
+      }
+
       await client.execute({ sql: `INSERT INTO ${TRACKING_TABLE} (name) VALUES (?)`, args: [folder] });
       console.log(`[deploy-migrations] applied ${folder}`);
     }
@@ -106,7 +171,14 @@ async function main() {
   console.log("[deploy-migrations] done.");
 }
 
-main().catch((err) => {
-  console.error("[deploy-migrations] failed:", err);
-  process.exit(1);
-});
+// Guarded so importing applyViaLibsql()/splitStatements() etc. for a
+// test doesn't also trigger this script's own CLI behavior as a side
+// effect of the import — the Dockerfile CMD and every real invocation
+// always run this file directly (`npx tsx scripts/deploy-migrations.ts`),
+// never import it.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[deploy-migrations] failed:", err);
+    process.exit(1);
+  });
+}
