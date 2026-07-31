@@ -62,6 +62,10 @@ function keepAlive(): void {
 
 interface AgentIdentity {
   employeeEmail?: string;
+  // ProvisioningToken.id, when this connection authenticated with a
+  // per-device token rather than the shared ORG_ACCESS_KEY — carried
+  // through to heartbeats so the Endpoints view can group by device.
+  tokenId?: string;
   ipAddress?: string;
 }
 
@@ -88,7 +92,7 @@ async function handleAgentMessage(raw: WebSocket.RawData, identity: AgentIdentit
   if (isValidHeartbeat(payload)) {
     await ingestHeartbeat(
       { ...payload, employeeEmail: identity.employeeEmail ?? payload.employeeEmail },
-      { ipAddress: identity.ipAddress }
+      { ipAddress: identity.ipAddress, tokenId: identity.tokenId }
     );
   }
 }
@@ -215,7 +219,7 @@ app.prepare().then(() => {
       ws.on("message", (raw) => {
         const handler =
           role === "agent"
-            ? handleAgentMessage(raw, { employeeEmail, ipAddress })
+            ? handleAgentMessage(raw, { employeeEmail, tokenId: agentTokenId, ipAddress })
             : handleDashboardMessage(raw, { operator: dashboardOperator, ipAddress });
         handler.catch((err) => console.error(`[ws] error handling ${role} message:`, err));
       });

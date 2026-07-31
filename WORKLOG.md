@@ -1548,3 +1548,68 @@ real endpoints ("every time cannot do this").
   extension can fully avoid.
 
 **Status: Extension now self-heals and is remotely controllable — one-time per-device setup (token + server URL via Options), then the dashboard drives the kill switch. Pending user confirmation that `agentConnections` reaches 1 in production.**
+
+## 2026-07-31 — Endpoints view: connected agents were invisible on the dashboard
+
+- Confirmed in production: `/api/health` reported
+  `agentConnections: 1` — the agent was genuinely connected — but the
+  device appeared nowhere in the dashboard.
+- Root cause, found by reading what each page actually queries rather
+  than guessing: **every dashboard view starts from the `Employee`
+  table.** `/users` is `employee.findMany()`; `/assets` is
+  `employee.findMany({ where: { managedDeviceId: { not: null } } })`
+  (which additionally requires a `managedDeviceId` nothing in the
+  heartbeat path ever sets); the Overview only surfaces heartbeats as a
+  raw `heartbeat.count()`. Meanwhile `ingestHeartbeat()` links a
+  heartbeat to an employee via `updateMany({ where: { email } })`, which
+  by design matches **zero rows** for an unrecognized address. The test
+  device's identity (`yesarsad7@gmail.com`) is not one of the seeded
+  `@insider-shield.dev` mock employees, so its heartbeats were being
+  stored correctly and then rendered by nothing at all. There was no
+  "connected agents" view in the product.
+- Also found while fixing it: heartbeats carried **no device identity**.
+  The WS connection knows its `tokenId` (from Phase 8's
+  `verifyAgentCredential`), and the provisioning token is where the
+  admin-assigned `deviceName` lives — but `server.ts` only passed
+  `{ employeeEmail, ipAddress }` down to the ingest, so the device name
+  never reached the database. Added `Heartbeat.tokenId` (migration
+  `add_heartbeat_token_id`), threaded `tokenId` through
+  `AgentIdentity` → `ingestHeartbeat`, and took it strictly from the
+  authenticated connection rather than the payload — an agent must not
+  be able to claim to be a device it didn't authenticate as.
+- `src/lib/agents.ts` (new) builds the view from the **heartbeat side**,
+  joining to `ProvisioningToken` for the device name and to `Employee`
+  only for an optional display name — so an authenticated-but-
+  unrecognized agent is listed with a visible "not a known employee"
+  marker instead of silently vanishing. Status is derived from the live
+  `wsRegistry` snapshot first (an open socket is authoritative),
+  falling back to heartbeat age. Deliberately three states, not two:
+  `stale` covers the ~1 minute an agent can legitimately be mid-
+  reconnect after an MV3 service-worker recycle, which would otherwise
+  show as a false "offline" on every worker restart. Queries are capped
+  to a 24h lookback since the table grows a row per agent every 20s.
+- New `/endpoints` page + sidebar entry: online/offline/heartbeat metric
+  cards and a table (device, employee, platform, IP, status, last seen,
+  ping count). Refresh is a 15s `router.refresh()` poll rather than the
+  WS channel the Incident Feed uses — broadcasting every agent's 20s
+  heartbeat to every open dashboard would multiply traffic for data
+  whose only visible effect is a relative timestamp ticking. The poll is
+  user-toggleable.
+- `tests/endpoints.spec.ts` (new, 2 cases) pins exactly the bug: an
+  agent authenticating with a provisioning token but a deliberately
+  unknown `employeeEmail` must still be listed, with its token-derived
+  device name, the "not a known employee" marker, and `online` status.
+  Hit a real test bug while writing it — Playwright's standalone
+  `request` fixture has its own cookie jar, so logging in through it
+  left `page.goto()` unauthenticated and redirecting to `/login`;
+  switched to `page.request`, which shares the browser context.
+- Verified: `npm run build`, `npm run lint`, full suite **15/15**, and
+  the rendered page checked visually (not just asserted on) — device
+  name "yoga" from the token, unknown-employee marker, platform, live
+  status all correct.
+- Note for the production rollout: this adds a migration, which the
+  container's `scripts/deploy-migrations.ts` applies automatically on
+  next deploy. Existing heartbeat rows predate `tokenId` and will show
+  as "Unnamed device / shared org key" until the agent sends new ones.
+
+**Status: Connected agents are now visible on their own dashboard page, including agents whose identity doesn't match any employee record — which was the actual gap.**

@@ -68,12 +68,19 @@ model Heartbeat {
   // employeeEmail — see server.ts's WS upgrade handler and
   // src/lib/telemetryIngest.ts's ingestHeartbeat().
   employeeEmail String?
+  // ProvisioningToken.id of the credential this agent authenticated
+  // with, when it used a per-device token rather than the shared
+  // ORG_ACCESS_KEY. This is the closest thing to a stable device
+  // identity the system has — the token carries the admin-assigned
+  // deviceName — so it's what the Endpoints view groups agents by.
+  tokenId       String?
   ipAddress     String?
   platform      String // JSON-encoded { os, arch }
   timestamp     DateTime @default(now())
   status        String
 
   @@index([employeeEmail])
+  @@index([tokenId])
 }
 
 // Per-device/per-employee credentials an admin can generate, list, and

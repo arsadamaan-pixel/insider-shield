@@ -90,6 +90,26 @@ export function registerConnection(
   });
 }
 
+// Snapshot of which agents hold an open socket right now. Read by the
+// Endpoints page (a server component, running in the same Node process
+// as server.ts — see this module's header) to distinguish "connected
+// this instant" from "last seen N minutes ago", which the Heartbeat
+// table alone can't tell you.
+export function getLiveAgentSnapshot(): { tokenIds: Set<string>; employeeEmails: Set<string> } {
+  return {
+    tokenIds: new Set(
+      Array.from(agentSocketsByTokenId.entries())
+        .filter(([, sockets]) => sockets.size > 0)
+        .map(([tokenId]) => tokenId)
+    ),
+    employeeEmails: new Set(
+      Array.from(agentSocketsByEmail.entries())
+        .filter(([, sockets]) => sockets.size > 0)
+        .map(([email]) => email)
+    ),
+  };
+}
+
 export function broadcast(sockets: Iterable<WebSocket>, message: ServerToDashboardMessage | ServerToAgentMessage): void {
   const json = JSON.stringify(message);
   for (const socket of sockets) {

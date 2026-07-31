@@ -101,11 +101,17 @@ export async function ingestDlpEvent(payload: IncomingDlpEvent, meta?: { ipAddre
   };
 }
 
-export async function ingestHeartbeat(payload: IncomingHeartbeat, meta?: { ipAddress?: string }): Promise<void> {
+export async function ingestHeartbeat(
+  payload: IncomingHeartbeat,
+  meta?: { ipAddress?: string; tokenId?: string }
+): Promise<void> {
   await prisma.heartbeat.create({
     data: {
       orgKey: payload.orgKey ?? "unknown",
       employeeEmail: payload.employeeEmail,
+      // Connection-level, never payload-supplied: the agent can't claim
+      // to be a device it didn't authenticate as.
+      tokenId: meta?.tokenId,
       ipAddress: meta?.ipAddress,
       platform: JSON.stringify(payload.platform),
       timestamp: new Date(payload.ts),

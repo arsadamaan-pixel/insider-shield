@@ -2,10 +2,21 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Users, ShieldCheck, MapPinned, ShieldAlert, ScrollText, LogOut, KeyRound } from "lucide-react";
+import {
+  LayoutDashboard,
+  Users,
+  ShieldCheck,
+  MapPinned,
+  ShieldAlert,
+  ScrollText,
+  LogOut,
+  KeyRound,
+  MonitorSmartphone,
+} from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/endpoints", label: "Endpoints", icon: MonitorSmartphone },
   { href: "/users", label: "IAM Users", icon: Users },
   { href: "/policies", label: "Policies", icon: ShieldCheck },
   { href: "/provisioning", label: "Agent Provisioning", icon: KeyRound },
