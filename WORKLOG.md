@@ -1277,3 +1277,82 @@
   Dockerfile, nothing in the app's own code or test-time behavior.
 
 **Status: Root cause identified and fixed via an automatic, non-destructive `prisma migrate deploy` on every container start — not via the requested `db push --accept-data-loss`, for the data-loss reasons above. Currently-live production instance needs either a redeploy or the manual command in README.md to actually pick up the fix.**
+
+## 2026-07-31 — Correction: `prisma migrate deploy` does NOT work against Turso; that Docker deploy failed
+
+- **The claim two entries above ("Confirms — usefully — that `prisma
+  migrate deploy` genuinely does work against a real Turso database in
+  practice") was wrong**, and the very next real deploy proved it: the
+  Docker container exited status 1 during startup running exactly that
+  command. The inference was never actually verified — it was inferred
+  from "other tables already existed and other pages worked," which
+  only proves the *Client* (via `@prisma/adapter-libsql`) can talk to
+  Turso, not that the *Migrate CLI* ever successfully ran against it.
+  The tables that already existed were most likely created via the
+  `turso db shell < migration.sql` fallback documented in `README.md`
+  all along, not via `migrate deploy`. Noting this plainly rather than
+  quietly editing the earlier entry — the mistake was inferring
+  "worked" from indirect evidence instead of actually testing the
+  command against the failure mode that mattered.
+- Reproduced the real failure locally before changing anything:
+  `DATABASE_URL="libsql://fake" npx prisma migrate deploy` →
+  `Error: P1013: The provided database string is invalid. The scheme
+  is not recognized`. Checked `@prisma/config`'s type definitions
+  again, specifically for a migrate-time driver-adapter hook (a
+  `datasource.adapter` field or similar) — there isn't one; `Datasource`
+  is just `{ url?, shadowDatabaseUrl? }`. Confirmed via `prisma migrate
+  deploy --help`: "The datasource URL configuration is read from the
+  Prisma config file" — no adapter concept anywhere in the Migrate
+  path. So this is a genuine, current limitation of Prisma 7.9.1's
+  tooling, not a configuration mistake on this project's part: the
+  driver-adapter system introduced for the generated Client was never
+  extended to Migrate/the schema-engine.
+- Real fix: `scripts/deploy-migrations.ts` (new). Branches on
+  `DATABASE_URL`'s scheme — a `file:` URL still delegates to `prisma
+  migrate deploy` (confirmed working fine for local SQLite throughout
+  this whole project); a `libsql://`/`http(s)` URL instead applies each
+  `prisma/migrations/*/migration.sql` file directly via
+  `@libsql/client`'s `executeMultiple(sql)` — a method libsql's own
+  type definitions document as "intended to be used with existing SQL
+  scripts, such as migrations," which takes a raw multi-statement SQL
+  string directly, no manual statement-splitting needed. Tracks which
+  migration folders have already been applied in its own table
+  (`_deploy_migrations`) so re-running it on every container start is
+  idempotent — deliberately not named `_prisma_migrations`, since this
+  path doesn't touch Prisma's own migration state at all. Added
+  `@libsql/client` as an explicit dependency (it was already present
+  transitively via `@prisma/adapter-libsql`, but importing it directly
+  in our own script without declaring it directly would be fragile).
+- Verified the new script directly, three scenarios: (1) `file:`
+  DATABASE_URL → correctly delegates to `prisma migrate deploy`, "No
+  pending migrations to apply" against the real local `dev.db`; (2) a
+  `libsql://` URL with no `TURSO_AUTH_TOKEN` → exits 1 immediately with
+  a clear message, satisfying the "verify required env vars are
+  available at startup" requirement directly rather than just hoping
+  they are; (3) a `libsql://` URL pointing at a nonexistent host with a
+  token set → reaches the real network call and surfaces the actual
+  connection error (`SERVER_ERROR: Server returned HTTP status 404`),
+  confirming the code path itself is correct and would work against a
+  real, valid Turso database — exit code 1, confirmed directly (not
+  through a piped `$?`, which the first check of this accidentally
+  read from `head` instead of `npx tsx`).
+- `Dockerfile`: `CMD` changed again, from
+  `["sh", "-c", "npx prisma migrate deploy && exec node_modules/.bin/tsx server.ts"]`
+  to
+  `["sh", "-c", "npx tsx scripts/deploy-migrations.ts && exec node_modules/.bin/tsx server.ts"]`,
+  and `scripts/` added to the runner stage's `COPY` list (it was never
+  copied before since it didn't exist until this fix).
+- Updated `README.md` again to correct the specific wrong claim from
+  the previous pass (both the step-2 walkthrough and the known-
+  limitations section), rather than leaving incorrect information live
+  in deployment docs.
+- Verified: `npm run build`, `npm run lint`, full Playwright suite
+  (10/10) all still pass — this change is Docker/deploy-script only,
+  no application code touched.
+- Still true, unchanged: the Docker image itself remains unverified via
+  an actual `docker build`/`docker run` in this environment (no Docker
+  daemon here) — this fix is reasoned through and locally
+  script-tested, not container-tested end-to-end. Recommend an actual
+  `docker build .` + a real Render redeploy as the next real check.
+
+**Status: The specific requested approach (`db push --accept-data-loss`) was declined for data-loss reasons (unchanged from the prior entry); the previously-implemented `prisma migrate deploy`-in-Docker fix was itself broken (confirmed by the real deploy failure) and has been replaced with a working direct-SQL-via-`@libsql/client` approach for Turso, verified locally against three scenarios. A redeploy is still needed to pick this up in production.**

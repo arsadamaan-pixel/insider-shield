@@ -52,16 +52,29 @@ turso db tokens create insider-shield       # → a long JWT — this is TURSO_A
 ### 2. Schema migrations — automatic on every deploy
 
 **You shouldn't need to do this step manually anymore.** The Docker
-image's `CMD` now runs `prisma migrate deploy` every time the container
-starts, before the app boots — confirmed working against a real Turso
-database in production (an earlier deploy hit a 500 on a page whose
-table hadn't been created yet, because a migration added after the
-last manual `migrate deploy` run was never re-applied; the fix was
-making this automatic, not switching to a different command — see
-`WORKLOG.md`). `migrate deploy` only applies the already-committed
-migration files in `prisma/migrations/` in order — it never diffs or
-drops anything speculatively, unlike `prisma db push`, so a normal
-deploy can't silently lose production data.
+image's `CMD` now runs `scripts/deploy-migrations.ts` every time the
+container starts, before the app boots.
+
+**Important correction, if you read an earlier version of this file:**
+`prisma migrate deploy` does **not** work against a `libsql://` URL —
+confirmed by reproducing it directly:
+`DATABASE_URL="libsql://fake" npx prisma migrate deploy` fails
+immediately with `P1013: The provided database string is invalid. The
+scheme is not recognized`. Prisma's driver-adapter system
+(`@prisma/adapter-libsql`) only covers the generated Client at runtime;
+the separate Migrate/schema-engine tooling has no adapter hook at all.
+So `scripts/deploy-migrations.ts` applies each migration's raw SQL
+directly via `@libsql/client`'s `executeMultiple()` (documented by
+libsql itself as intended for exactly this — "existing SQL scripts,
+such as migrations") whenever `DATABASE_URL` is a `libsql://`/`http(s)`
+URL, tracking what's already applied in its own small table
+(`_deploy_migrations` — deliberately not Prisma's own
+`_prisma_migrations`, since this path doesn't touch Prisma's migration
+state at all). For a plain `file:` URL it still delegates to
+`prisma migrate deploy`, which works fine there. Either way, only the
+already-committed files in `prisma/migrations/` are ever applied —
+nothing is diffed or dropped speculatively, unlike `prisma db push`, so
+a normal deploy can't silently lose production data.
 
 If you ever need to run it manually (first-time setup before the first
 deploy, or to unblock a currently-broken deployment without waiting for
@@ -70,7 +83,7 @@ a redeploy):
 ```bash
 DATABASE_URL="libsql://insider-shield-<org>.turso.io" \
 TURSO_AUTH_TOKEN="<token from above>" \
-npx prisma migrate deploy
+npx tsx scripts/deploy-migrations.ts
 ```
 
 If that ever fails for a specific database, fall back to applying each
@@ -145,14 +158,18 @@ applied yet (step 2).
   boots cleanly on your machine/CI before treating this as
   production-ready. See its header comment and `WORKLOG.md` for exactly
   what to check.
-- The Docker image itself is still unverified (see above) — the
-  `prisma migrate deploy` step it now runs automatically at container
-  start, however, **is** confirmed working against a real Turso
-  database in production (see `WORKLOG.md`'s 2026-07-31 entry). If a
-  future migration ever conflicts with existing production data,
-  `migrate deploy` fails loudly and the container won't start rather
-  than silently applying a destructive change — that's the intended
-  behavior, not a bug to work around by switching to `db push`.
+- The Docker image itself is still unverified (see above). The
+  migration step it now runs automatically at container start
+  (`scripts/deploy-migrations.ts`) exists specifically because a prior
+  version of this that called `prisma migrate deploy` directly against
+  Turso caused the real production deploy to fail outright — see
+  `WORKLOG.md`'s 2026-07-31 entries for the full story, including an
+  earlier (incorrect) claim in this file that `migrate deploy` worked
+  against Turso, which the actual failure disproved. If a future
+  migration ever conflicts with existing production data, this script
+  fails loudly and the container won't start rather than silently
+  applying a destructive change — that's the intended behavior, not a
+  bug to work around by switching to `db push`.
 - Render's **free** web service plan spins down after periods of
   inactivity and cold-starts on the next request; the WebSocket
   connection (both dashboard tabs and any deployed extension agents)

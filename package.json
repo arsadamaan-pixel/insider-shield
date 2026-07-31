@@ -11,9 +11,11 @@
     "postinstall": "prisma generate",
     "db:seed": "prisma db seed",
     "db:migrate": "prisma migrate dev",
+    "db:deploy": "tsx scripts/deploy-migrations.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "@prisma/adapter-better-sqlite3": "^7.9.1",
     "@prisma/adapter-libsql": "^7.9.1",
     "@prisma/client": "^7.9.1",

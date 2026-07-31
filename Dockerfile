@@ -48,6 +48,7 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/src ./src
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/next.config.ts ./next.config.ts
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
@@ -61,23 +62,30 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Runs `prisma migrate deploy` — NOT `db push` — every time the
-# container starts, before the app itself boots. migrate deploy only
-# applies the already-reviewed, already-committed migration files in
-# prisma/migrations/ in order; it never diffs/drops/alters anything
-# speculatively, so it can't silently discard production data the way
-# `db push --accept-data-loss` can. This is also the point where
+# Runs scripts/deploy-migrations.ts — NOT `prisma migrate deploy`
+# directly, and NOT `db push` — every time the container starts, before
+# the app itself boots. This is also the point where
 # DATABASE_URL/TURSO_AUTH_TOKEN are actually the real production
-# values — Render injects them into the running container, not into
-# the `docker build` step above, so this can't run any earlier than
-# container start and still see the right database. If a migration
-# ever genuinely conflicts with existing data, this fails loudly and
-# the container never starts serving traffic with a broken schema,
-# which is the correct failure mode — not something to "fix" by
-# switching to a command that pushes through such conflicts instead.
+# values: Render injects them into the running container, not into the
+# `docker build` step above, so migrations can't run any earlier than
+# container start and still see the right database.
+#
+# Why not `prisma migrate deploy` directly: reproduced locally that
+# Prisma's schema-engine rejects `libsql://` URLs outright
+# (`P1013: The provided database string is invalid. The scheme is not
+# recognized`) — Prisma's driver-adapter system only covers the
+# generated Client at runtime, not the separate Migrate tooling, which
+# has no adapter hook at all. scripts/deploy-migrations.ts applies each
+# migration's raw SQL directly via @libsql/client when DATABASE_URL is
+# a libsql/http(s) URL (falling back to `prisma migrate deploy` for a
+# plain `file:` URL, which works fine). Either way, only the
+# already-committed migration files in prisma/migrations/ are ever
+# applied — nothing is diffed or dropped speculatively, so a normal
+# deploy can't silently discard production data the way
+# `db push --accept-data-loss` could.
 #
 # sh -c form (not exec form) so SIGTERM still reaches the tsx process:
 # `exec` replaces the shell with the final command instead of leaving
 # it as a child, so the platform's stop signal still hits the real
 # process directly.
-CMD ["sh", "-c", "npx prisma migrate deploy && exec node_modules/.bin/tsx server.ts"]
+CMD ["sh", "-c", "npx tsx scripts/deploy-migrations.ts && exec node_modules/.bin/tsx server.ts"]

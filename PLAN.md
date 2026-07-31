@@ -385,23 +385,35 @@ before a first real deploy.
       keeps it awake roughly 24/7 — so it's a deliberate choice to
       prioritize uptime over free-tier hour budget; see `WORKLOG.md`.
 - [x] **Automatic production schema sync — added 2026-07-31, fixing a
-      real production 500 on `/provisioning`.** `Dockerfile`'s `CMD`
-      now runs `prisma migrate deploy` on every container start before
-      the app boots — the only point Render's real runtime env vars
-      (`DATABASE_URL`/`TURSO_AUTH_TOKEN`) are present. Root cause: a
-      migration added in Phase 8 was never re-applied to the production
-      Turso database after the one-time manual setup in Phase 7.
+      real production 500 on `/provisioning`, then fixed again the same
+      day after the first version's own Docker deploy failed.**
+      `Dockerfile`'s `CMD` runs `scripts/deploy-migrations.ts` on every
+      container start before the app boots — the only point Render's
+      real runtime env vars (`DATABASE_URL`/`TURSO_AUTH_TOKEN`) are
+      present. Root cause of the *original* bug: a migration added in
+      Phase 8 was never re-applied to the production Turso database
+      after the one-time manual setup in Phase 7.
       Deliberately **not** `prisma db push --accept-data-loss` (which
       was what was actually requested) — `db push` diffs and pushes
       schema changes destructively when needed, and running that
       automatically on every deploy risks silently dropping production
       data (including the audit trail) the first time a future
-      migration is structurally destructive. `migrate deploy` only
-      applies already-committed migration files in order and fails
-      loudly on a genuine conflict instead. See `WORKLOG.md` for the
-      full reasoning and the Render `preDeployCommand` alternative
-      considered (and not used, due to unclear Docker-runtime support
-      in Render's own docs).
+      migration is structurally destructive.
+      **Correction:** the first fix called `prisma migrate deploy`
+      directly, which was itself wrong — Prisma's Migrate/schema-engine
+      does not support `libsql://` URLs at all (`P1013: The provided
+      database string is invalid. The scheme is not recognized`,
+      reproduced locally), only the generated Client's driver-adapter
+      system does. `scripts/deploy-migrations.ts` instead applies each
+      migration's raw SQL directly via `@libsql/client`'s
+      `executeMultiple()` for a `libsql`/`http(s)` `DATABASE_URL`
+      (falling back to `prisma migrate deploy` for a plain `file:`
+      URL, which does work). Either path only applies already-committed
+      migration files in order and fails loudly on a genuine conflict —
+      never a speculative destructive change. See `WORKLOG.md` for the
+      full reasoning, both fix attempts, and the Render
+      `preDeployCommand` alternative considered (and not used, due to
+      unclear Docker-runtime support in Render's own docs).
 
 ### Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation — ✅ COMPLETE
 - [x] **Backend.** New `ProvisioningToken` Prisma model — only a
