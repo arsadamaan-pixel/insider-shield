@@ -236,10 +236,67 @@ milestone status.
   different value from `BEARER_TOKEN` — the login credential and the
   cookie-signing key shouldn't be the same secret).
 
+### Phase 6 — Automated E2E Testing & Hardening — ✅ COMPLETE
+- [x] `playwright.config.ts`: drives the *real* `server.ts` (not
+      `next build && next start`, which per the Phase 3 note has no WS
+      transport at all) via `webServer: { command: "npx tsx server.ts" }`
+      against a dedicated port (3100), a dedicated SQLite file
+      (`prisma/e2e-test.db`), and dedicated `ORG_ACCESS_KEY`/
+      `BEARER_TOKEN`/`SESSION_SECRET` values (`tests/env.ts`) — never
+      the developer's real `dev.db`/`.env`/port-3000 dev server.
+- [x] DB initialization/reset: `tests/global-setup.ts` deletes any
+      stale `e2e-test.db*` files, runs `prisma migrate deploy` against
+      it, then seeds exactly one `Employee` row
+      (`tests/seed-e2e-employee.ts`) — deliberately *not*
+      `prisma/seed.ts`'s full mock dataset, so assertions never depend
+      on (or flake against) unrelated random seed data.
+      `tests/global-teardown.ts` wipes the same files after the run.
+- [x] `tests/e2e.spec.ts` — five scenarios, run `serial` against one
+      shared authenticated page and one shared agent WebSocket (later
+      steps genuinely depend on earlier ones — see file header):
+      1. **Auth & Session Flow** — logs in with the test `BEARER_TOKEN`,
+         confirms redirect + dashboard content + an `httpOnly` `is_session`
+         cookie.
+      2. **Telemetry & WS Broadcast** — a raw `ws` client (playing the
+         agent) sends a `credit_card_like` (severity `high`) `dlp_event`;
+         asserts the row appears in the Overview page's Live Incident
+         Feed with **zero** `page.goto()`/reload in the test.
+      3. **Policy Push** — flips a checkbox in the Policy Control Panel,
+         clicks Push Update, asserts both the UI's "Pushed via WebSocket"
+         confirmation *and* that the same agent socket actually receives
+         the resulting `policy_update` message.
+      4. **IAM Offboarding & Revocation** — offboards the test employee
+         via `/users`, asserts the live agent socket gets a
+         `terminate_session` notice and then closes with code `4001`
+         (`wsRegistry.ts`'s actual close code), then opens a *new*
+         connection for the same employee and asserts it's rejected at
+         the WS-upgrade level with HTTP **403** (via `ws`'s
+         `unexpected-response` event) — not just delayed.
+      5. **Audit Trail Verification** — navigates to `/audit`, asserts
+         `login_succeeded`, `policy_update`, and `employee_revoked` rows
+         all show the correct actor email and a real `hh:mm:ss`
+         timestamp.
+- [x] All 5 scenarios pass, twice in a row (confirming the fresh-DB
+      reset makes each run deterministic, not order-dependent on
+      leftover state). `npm run build` and `npm run lint` both still
+      pass with the new `tests/`/`playwright.config.ts` files in the
+      tsconfig's `**/*.ts` glob.
+- Added `test:e2e": "playwright test"` script. `@playwright/test` was
+  already in `package.json` (from the earlier `chore(phase6)` commit)
+  but had never actually been `npm install`ed — see `WORKLOG.md`.
+- Fixed during verification, not anticipated up front: Prisma 7's
+  generated client (`src/generated/prisma/client.ts`) is an ES module
+  with a top-level `import.meta.url` — dynamically `import()`-ing it
+  directly inside `global-setup.ts` throws `Cannot require() ES Module
+  ... in a cycle` under Playwright's own config/setup loader. Fixed by
+  running the one-employee seed as its own `tsx` child process
+  (`tests/seed-e2e-employee.ts`), the same pattern `prisma/seed.ts`
+  already used successfully — see `WORKLOG.md`.
+
 ## Active Milestone
 
-**Phase 5 — Hardening, Compliance & Deployment** is in progress as of
-2026-07-30. Dashboard/API authentication and audit logging are both
-complete and verified end-to-end (see Phase 5 checklist above). Legal
-review and the Vercel deployment pipeline remain open. Phases 1–4 are
-complete.
+**Phase 6 — Automated E2E Testing & Hardening** is complete as of
+2026-07-31 (see checklist above). Phase 5's two remaining items — legal/
+compliance review and the Vercel deployment pipeline — are still open;
+everything else through Phase 6 is done and covered by
+`npm run test:e2e`.

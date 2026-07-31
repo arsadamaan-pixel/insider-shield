@@ -795,3 +795,107 @@
   label is self-reported at login, not verified identity.
 
 **Status: Phase 5 Auth, API Security, and Audit Logging Layer — dashboard/API authentication and audit logging are COMPLETE and verified end-to-end.** Legal/compliance review and the Vercel deployment pipeline remain open on the Phase 5 backlog.
+
+## 2026-07-31 — Phase 6: Automated E2E Testing & Hardening
+
+- Explored the codebase from scratch before writing anything — this
+  session had no memory of the Phase 3-WS/Phase 4/Phase 5 work (built in
+  other sessions, per the commit history/PLAN.md already on disk), so
+  read `server.ts`, `src/lib/auth.ts`, `authGuards.ts`, `wsRegistry.ts`,
+  `auditLog.ts`, `telemetryIngest.ts`, `policyStore.ts`,
+  `src/types/websocket.ts`, and every page/component the five required
+  scenarios touch, rather than guessing at API shapes or WS message
+  contracts.
+- `@playwright/test` was already a `package.json` devDependency (from
+  the earlier `chore(phase6)` commit) but had never actually been `npm
+  install`ed — `node_modules/@playwright/test` didn't exist, so `npx
+  playwright test` was resolving a *different*, globally-npx-cached
+  `playwright` package that couldn't find it. Fixed with a plain `npm
+  install` (added 9 packages) and then ran tests via the now-real
+  `./node_modules/.bin/playwright` binary. Approved three more pending
+  install scripts this surfaced (`esbuild`, `sharp`, `unrs-resolver`) via
+  `npm approve-scripts` — same sandbox script-allowlist gate from Phase 2/3.
+- `tests/env.ts`: single source of truth for the suite's port (3100),
+  SQLite file (`prisma/e2e-test.db`), and `ORG_ACCESS_KEY`/
+  `BEARER_TOKEN`/`SESSION_SECRET` test values, plus the one fixture
+  `Employee` (`e2e.agent@insider-shield.dev`) and operator email
+  (`e2e-operator@insider-shield.dev`) the whole suite is built around.
+  Deliberately never reuses the developer's real `dev.db`/`.env`/port
+  3000 — this suite cannot corrupt real dev data or collide with a dev
+  server already running.
+- `tests/global-setup.ts` / `global-teardown.ts`: wipe
+  `e2e-test.db*` → `prisma migrate deploy` against it (applies the 3
+  existing migrations non-interactively) → seed one `Employee` row →
+  (teardown) wipe again after the run. Satisfies "DB initialization/
+  reset before test runs" literally, every run, not just once.
+- **Bug hit during implementation, not anticipated in the plan:**
+  Prisma 7's generated client (`src/generated/prisma/client.ts`) is an
+  ES module (`import.meta.url` at the top). Dynamically `import()`-ing
+  it directly inside `global-setup.ts` threw `Cannot require() ES
+  Module ... in a cycle` — something in Playwright's own config/setup
+  module loading converts that into a `require()` under the hood, and
+  Prisma's generated module graph has an internal cycle that Node's
+  require(esm) interop explicitly refuses to resolve. Same category of
+  Prisma-7-specific surprise as the driver-adapter requirement hit in
+  the SQLite Data Persistence phase. Fixed by moving the seed into its
+  own standalone script (`tests/seed-e2e-employee.ts`) run as a plain
+  `tsx` child process from `global-setup.ts` via `execFileSync` — the
+  exact same execution pattern `prisma/seed.ts` already uses
+  successfully, which sidesteps Playwright's module graph entirely.
+- `playwright.config.ts`: `webServer.command` is `npx tsx server.ts`
+  (dev mode, no prior `next build` needed) — specifically *not*
+  `next build && next start`, since (per the Phase 3 note still true
+  today) stock `next start` never attaches the custom WS server at all.
+  `workers: 1` / `fullyParallel: false` / `mode: "serial"` in the spec
+  file, because the five scenarios are a genuine dependency chain (the
+  offboarding test needs the still-open agent socket the telemetry test
+  opened; the audit test needs the rows the earlier tests produced), not
+  independent cases that happen to be easy to parallelize.
+- `tests/e2e.spec.ts` — implementation notes on the trickier assertions:
+  - **DLP broadcast without a reload**: the test explicitly waits for
+    the Overview page's Live Incident Feed status dot to read "Live"
+    (`getByText("Live", { exact: true })` — `exact` matters, since the
+    feed's own heading is literally "Live Incident Feed" and would
+    otherwise ambiguously match too) *before* sending the agent's
+    `dlp_event` — `broadcast()` in `wsRegistry.ts` only fans out to
+    sockets already registered at send time, so sending too early would
+    make the row never appear and the test would have to reload to see
+    it, defeating the point of the assertion.
+  - **Policy Push → agent verification**: registers the
+    `waitForMessage(agentSocket, m => m.type === "policy_update")`
+    listener *before* clicking "Push Update" (not after), and separately
+    waits for the Policies page's own "Live" status dot before clicking
+    — the same race as above, on the dashboard-role socket's connection
+    this time.
+  - **Offboarding → 403 reconnect**: `terminateEmployeeSessions()`
+    actually closes the live socket with code `4001` (not an HTTP status
+    — that's a WS close code); the "403" in the task description refers
+    to the *separate* reconnect attempt, which `server.ts`'s upgrade
+    handler rejects at the HTTP level before the WS handshake completes.
+    Asserted both, separately: `4001` on the original socket's `close`
+    event, `403` via a *new* socket's `unexpected-response` event
+    (`ws`'s event for "server replied with a non-101 status during
+    upgrade"). Every `ws.WebSocket` instance gets a permanent no-op
+    `error` listener the moment it's constructed — an unhandled `error`
+    event on a Node `EventEmitter` throws and crashes the whole test
+    process, which the first version of this file didn't have and would
+    have hit right after the 403 rejection.
+  - **Audit timestamps**: asserted with a loose `\d{1,2}:\d{2}:\d{2}`
+    regex against the rendered cell text rather than `Date.parse()`-ing
+    it — `AuditLogTable.tsx` renders timestamps via a locale-formatted
+    `toLocaleString()`, which `Date.parse()` cannot reliably round-trip.
+- Verified: `npx playwright test` (via the local binary) — **5/5 pass,
+  twice in a row** (confirms the fresh-DB-per-run reset makes this
+  deterministic, not order-dependent on leftover state from a previous
+  run). `npm run build` (TypeScript check included) and `npm run lint`
+  both still pass with `tests/*.ts` and `playwright.config.ts` now
+  inside the tsconfig's broad `**/*.ts` include glob. Confirmed
+  `prisma/dev.db`'s mtime is unchanged after the full run — the suite
+  never touches the developer's real database.
+- Added `"test:e2e": "playwright test"` to `package.json` scripts.
+- Not done (out of scope for this task, flagging for later): no CI
+  workflow wired up to actually run `npm run test:e2e` on push/PR; the
+  suite covers the 5 specified scenarios only, not every route/edge case
+  (e.g. rate-limited login, agent auth failure, geo-compliance map).
+
+**Status: Phase 6 — Automated E2E Testing & Hardening COMPLETE.** All 5 required scenarios pass reproducibly against a disposable test database; `npm run build`/`lint` remain green.

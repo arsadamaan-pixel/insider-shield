@@ -9,7 +9,8 @@
     "lint": "eslint",
     "postinstall": "prisma generate",
     "db:seed": "prisma db seed",
-    "db:migrate": "prisma migrate dev"
+    "db:migrate": "prisma migrate dev",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
@@ -42,6 +43,9 @@
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
     "prisma@7.9.1": true,
-    "@prisma/engines@7.9.1": true
+    "@prisma/engines@7.9.1": true,
+    "esbuild@0.28.1": true,
+    "sharp@0.34.5": true,
+    "unrs-resolver@1.12.2": true
   }
 }
