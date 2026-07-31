@@ -30,7 +30,19 @@
       <p class="hint">
         Required for this device's WebSocket connection to be accepted
         by the server at all. Only used when no enterprise-managed
-        policy supplies one.
+        policy supplies one. Paste a per-device token from the
+        dashboard's Agent Provisioning page here, or the shared
+        ORG_ACCESS_KEY.
+      </p>
+
+      <label for="wsEndpoint">Server URL (local-dev override)</label>
+      <input type="text" id="wsEndpoint" name="wsEndpoint" placeholder="wss://your-deployment.onrender.com/api/ws" />
+      <p class="hint">
+        Defaults to <code>ws://localhost:3000/api/ws</code> if left
+        blank. Set this to your deployed SOC dashboard's
+        <code>wss://.../api/ws</code> URL for this device to report to a
+        real deployment instead of a local dev server. Only used when no
+        enterprise-managed policy supplies one.
       </p>
 
       <button type="submit">Save</button>

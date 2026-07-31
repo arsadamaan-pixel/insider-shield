@@ -1437,3 +1437,114 @@
   far.
 
 **Status: Root cause (pre-existing production tables, untracked) identified from real deploy logs; two additional real bugs in the prior fix found and corrected before pushing again; behavior now covered by a permanent test using the same code path production uses. Still pending: an actual successful Render redeploy to close this out for real.**
+
+## 2026-07-31 — Confirmed live in production
+
+- Pushed as `620476b`. Render redeployed successfully.
+- Verified directly against the live site (screenshots), not just
+  inferred from a "Live" status badge:
+  1. `https://insider-shield.onrender.com/provisioning` loads cleanly —
+     no 500, "Agent Provisioning" section, generator card, and an empty
+     "Active Provisioning Keys" table all render correctly.
+  2. Generated a real token in production ("yoga" device name, no
+     employee assigned, no expiration) — masked reveal/copy UI and the
+     QR quick-guide all rendered correctly, confirming the full chain
+     (frontend → `POST /api/admin/provision-token` → Turso write via
+     the now-fixed migration path → response → UI update) actually
+     works end-to-end against the real deployed database, not just
+     locally.
+- This closes out the migration-runner saga from the three entries
+  above: root cause found from real evidence each time (not repeated
+  guessing), two additional bugs caught before a third bad push, a
+  permanent regression test added, and now an actual successful
+  production deploy plus a real write confirmed — not just "should
+  work."
+
+**Status: RESOLVED and confirmed live — `/provisioning` works end-to-end in production, including a real token generation against the live Turso database.**
+
+## 2026-07-31 — Extension: connect-always, MV3 self-healing, status badge, shield icon
+
+Triggered by a practical question: after configuring a device with a
+provisioning token, `/api/health` still reported `agentConnections: 0`,
+and enabling it required a DevTools console command — untenable for
+real endpoints ("every time cannot do this").
+
+- **Found: `manifest.json` had no `managed_schema` declaration.** Chrome
+  requires `"storage": { "managed_schema": ... }` for
+  `chrome.storage.managed` to return anything at all. Without it, every
+  managed-policy code path in `background.js` (`readManagedStorage()`,
+  the managed-first branches of `getEffectivePolicy()`/
+  `getOrgAccessKey()`/`getEmployeeEmail()`) has been dead since Phase 2 —
+  silently, because `readManagedStorage()` swallows `chrome.runtime
+  .lastError` and resolves `{}`. The "zero-touch Chrome Enterprise
+  Extension" premise in `CLAUDE.md` has therefore never actually
+  functioned. Flagged, not fixed — it's its own piece of work
+  (schema file + policy deployment) and the user chose a different
+  approach for now.
+- **Fixed a bootstrap deadlock (the actual cause of the manual step).**
+  `connectWebSocket()` returned early when `transmitEvents` was false,
+  but OTA policy updates only arrive over an open socket — so a device
+  with the kill switch off could *never* be told to turn it on. The
+  dashboard's existing Policy Control Panel kill-switch toggle was
+  therefore unable to reach any real device. Split the single gate into
+  two: connecting is now gated only on having an admin-provisioned
+  `orgAccessKey`, while sending DLP event content stays gated on
+  `dlpEnabled` + `transmitEvents` (both still defaulting OFF, verified
+  intact in `handleDlpEvent`). Heartbeats now flow on a credentialed
+  connection regardless of the kill switch — that is the deliberate
+  trade: device liveness/inventory is visible so an admin can *see* the
+  device and then enable it remotely, while clipboard/paste content
+  remains fully gated. Also added an early return when no credential is
+  configured, so the agent no longer spins a reconnect loop against a
+  guaranteed 401 (which was also writing an `agent_auth_failed` audit
+  row on every attempt).
+- **Fixed the real reason the agent stayed offline: MV3 worker death.**
+  The extensions page showed `service worker (Inactive)`. Chrome MV3
+  terminates an idle service worker after ~30s, taking the WebSocket
+  with it, and nothing inside the extension survives to reconnect —
+  the agent stays silently offline until a browser restart or a manual
+  options-page save. Added a `chrome.alarms` periodic alarm (1 minute,
+  the smallest period reliably supported across Chromium versions),
+  which the *browser* owns rather than the worker, so it survives
+  termination and wakes the worker back up; the handler reconnects when
+  the socket isn't open. Added the `"alarms"` permission. Also added a
+  `chrome.runtime.onStartup` listener — `onInstalled` only fires on
+  install/update, so without it a plain browser restart left the device
+  disconnected indefinitely.
+- **Lowered `DEFAULT_POLICY.heartbeatIntervalMs` 30000 → 20000.**
+  WebSocket traffic is what resets MV3's idle timer, and a 30s
+  heartbeat sat exactly on the ~30s termination boundary — a race the
+  worker often lost. 20s keeps the worker alive while connected.
+- **Added a toolbar status badge** (`chrome.action` — green dot
+  connected / red disconnected-retrying / grey no-credential, with a
+  matching tooltip since colour alone isn't accessible). One
+  correctness detail worth noting: the badge is stored by the browser,
+  not the worker, so it survives worker termination and could otherwise
+  read a stale green after the connection died with the previous
+  worker — the alarm handler now explicitly corrects it to red on wake
+  before reconnecting. All `chrome.action` calls are wrapped in
+  try/catch: a cosmetic badge must never take the agent down.
+- **Added a proper shield icon.** `extension/icons/icon.svg` is the
+  source of truth (solid emerald shield on a dark rounded square,
+  matching the dashboard's own mark — deliberately solid rather than a
+  thin outline, since toolbar icons render at 16x16 where interior
+  detail turns to mush), with PNGs at 16/32/48/128 generated by
+  `scripts/generate-extension-icons.ts` via `sharp` (already present as
+  a Next.js dependency). Script kept in-repo so the PNGs are
+  reproducible rather than unexplained binaries. Wired into both
+  `icons` and `action.default_icon`; manifest bumped 0.4.0 → 0.5.0 and
+  its stale "(Phase 4)" description corrected.
+- Also added a **Server URL** field to the options page earlier in this
+  session — the extension defaulted to `ws://localhost:3000/api/ws`
+  with no way to point it at a deployment, so a configured token alone
+  could never have reached production.
+- Verified: `npm run build`, `npm run lint`, full Playwright suite
+  (13/13) all pass. Icon rendering checked visually, not just for
+  file existence.
+- Known limitation, documented not hidden: after an unexpected worker
+  termination the agent can be offline for up to ~1 minute until the
+  alarm fires, and the badge may read stale until that same wake. This
+  is inherent to MV3's service-worker model, not something the
+  extension can fully avoid.
+
+**Status: Extension now self-heals and is remotely controllable — one-time per-device setup (token + server URL via Options), then the dashboard drives the kill switch. Pending user confirmation that `agentConnections` reaches 1 in production.**
