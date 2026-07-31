@@ -96,6 +96,11 @@ Either:
 
 ### 4. Environment variables
 
+The 5 variables required for a Render.com deployment: `DATABASE_URL`,
+`TURSO_AUTH_TOKEN`, `ORG_ACCESS_KEY`, `BEARER_TOKEN`, `SESSION_SECRET`
+(`NODE_ENV`/`PORT` below are set automatically by Render, not something
+you configure).
+
 | Variable            | Where it comes from                              | Required |
 |----------------------|---------------------------------------------------|----------|
 | `DATABASE_URL`        | Turso (`turso db show ... --url`) — or `file:./dev.db` locally | yes |
