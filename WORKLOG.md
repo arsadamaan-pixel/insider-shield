@@ -1017,3 +1017,129 @@
   rather than marked complete.
 
 **Status: Phase 7 — Production Readiness & Deployment Configuration is configuration-ready, not "verified in production."** Every piece that could be checked locally (build, lint, e2e against the local adapter path, the health endpoint) passes. The Docker build and the Turso migration path need a real Docker daemon and Turso account to confirm, neither of which exist in this environment — see the flags above before a first real deploy.
+
+## 2026-07-31 — Phase 8: Enterprise Provisioning & One-Click Agent Token Generation
+
+- Read the existing agent-auth path in full before designing anything:
+  `server.ts`'s WS-upgrade handler, `src/lib/auth.ts`'s
+  `isValidOrgAccessKey()`, `src/lib/authGuards.ts`'s
+  `requireOrgAccessKey()`, `src/lib/wsRegistry.ts`, and — importantly —
+  `extension/background/background.js` and
+  `extension/options/options.html`, to confirm the extension already
+  sends whatever credential it's configured with as a plain
+  `orgAccessKey` query param/header, with a manual-entry field in
+  options.html labeled "Org access key" (from Phase 4's employee-
+  identity work). That confirmed per-device tokens could be layered in
+  as an *alternative* valid value for that same field/param, with
+  **zero extension code changes** — the extension doesn't need to know
+  or care whether the value it's holding is the org-wide static key or
+  a per-device provisioned token.
+- `prisma/schema.prisma`: new `ProvisioningToken` model
+  (`tokenHash` unique, `tokenPrefix` for safe display, nullable
+  `employeeId`/`deviceName`, `status`, `expiresAt`, `revokedAt`,
+  `lastUsedAt`, `createdBy`). Ran `prisma migrate dev --name
+  add_provisioning_tokens` locally, then `prisma generate` (forgot the
+  regenerate step once, briefly, and hit "Property 'provisioningToken'
+  does not exist on type 'PrismaClient'" during `npm run build` — fixed
+  immediately, noting it here since it's an easy step to forget after
+  any schema change).
+- `src/lib/agentTokens.ts` (new): raw tokens are `ist_` + 24 random
+  bytes (base64url); only `createHash("sha256")` of the raw value is
+  ever persisted. `verifyAgentCredential()` tries the static
+  `ORG_ACCESS_KEY` first (cheap string comparison, no DB hit — exact
+  prior behavior preserved for anyone still using the org-wide key)
+  before falling back to a `tokenHash` lookup; updates `lastUsedAt` on
+  a successful token match. Zero `next/server`/`next/headers` imports
+  (same constraint as `src/lib/auth.ts` — this module is imported by
+  `server.ts` at top level via `tsx`, before `next({...})` runs).
+- **Design call, not explicitly specified:** the task described three
+  token states ("active, revoked, or used") but a stored three-way
+  enum with unclear active↔used transition rules seemed like it'd
+  create more ambiguity than it resolved. Went with two stored states
+  (`active`/`revoked`) plus a `lastUsedAt` timestamp — "used" is
+  derived (has `lastUsedAt`) rather than a stored status a token
+  transitions out of, so a token can be both "active" and "has been
+  used" simultaneously, which is the actually-useful distinction for
+  an ongoing per-device credential (vs. a one-time enrollment code,
+  which is a different pattern this codebase's existing
+  `ORG_ACCESS_KEY`-as-ongoing-credential design doesn't otherwise use).
+- `src/lib/wsRegistry.ts`: added `agentSocketsByTokenId` and
+  `terminateTokenSessions()`, refactored the shared close-and-notify
+  logic out of `terminateEmployeeSessions()` into one
+  `terminateSocketSet()` helper both now call (same behavior/signature
+  for the existing function — verified via the full Phase 6 e2e suite
+  still passing unchanged). `registerConnection()`'s identity now
+  optionally carries a `tokenId` alongside `employeeEmail`.
+- `server.ts`: agent WS-upgrade auth switched from the sync
+  `isValidOrgAccessKey()` call to `await verifyAgentCredential()`,
+  capturing `tokenId` when a provisioning token (not the static key)
+  authenticated and passing it into `registerConnection()`.
+  `src/lib/authGuards.ts`'s `requireOrgAccessKey()` (used by the REST
+  `/api/telemetry` POST) made async for the same reason — its one call
+  site in `src/app/api/telemetry/route.ts` updated to `await` it.
+- Three routes: `POST`/`GET /api/admin/provision-token`,
+  `POST /api/admin/provision-token/revoke` — all `requireDashboardSession`-gated (never `ORG_ACCESS_KEY`; an
+  agent must never be able to mint or list its own credentials).
+  `employeeId`, if provided, is validated against a real `Employee` row
+  (422 `UnknownEmployeeError` otherwise) rather than silently accepting
+  an orphan reference. Both mutations audit-logged
+  (`provisioning_token_created`/`_revoked`, added to
+  `src/types/auditLog.ts`'s `AUDIT_ACTIONS` and
+  `AuditLogTable.tsx`'s color map).
+- **Manually verified the full loop against a running dev server
+  before writing the automated test** (faster to catch a design
+  mistake this way than debugging it through Playwright first): logged
+  in, generated a token via curl, connected a raw `ws` agent client
+  with `orgAccessKey=<that token>` — connected successfully; called the
+  revoke endpoint — the open socket received `{"type":
+  "terminate_session","reason":"token_revoked"}` then closed with code
+  `4001`; a fresh reconnect attempt with the same (now-revoked) token
+  got rejected with 401 at the WS-upgrade level. All exactly as
+  designed, before any test code existed.
+- Hit and fixed a stray-process issue during that manual verification,
+  unrelated to the actual feature: an old `next start` (production
+  build, left over from the Phase 7 health-check debugging session)
+  was still holding port 3000, so `npm run dev` silently talked past it
+  and curl hit 404s against stale routes. Killed the stray process and
+  a leftover `.next/dev` lock, restarted clean. Not a code bug — noting
+  it here in case the same confusion recurs.
+- Frontend: `src/types/provisioningToken.ts` (client-safe types,
+  mirroring the existing `auditLog.ts`/`src/lib/auditLog.ts` split so
+  `@/lib/prisma` never ends up in a client bundle).
+  `TokenGeneratorCard.tsx`, `TokenTable.tsx`, `ProvisioningWorkspace.tsx`
+  (client-side state lift, same pattern as `EmployeeTable`/
+  `OffboardModal`), `src/app/(dashboard)/provisioning/page.tsx`
+  (`force-dynamic`, same reasoning as every other dashboard page — see
+  Phase 3 notes). Added "Agent Provisioning" to `Sidebar.tsx`'s
+  `NAV_ITEMS`. Added `qrcode`/`@types/qrcode`.
+- `tests/provisioning.spec.ts` (new file, not folded into
+  `tests/e2e.spec.ts`): deliberately order-independent from that
+  suite — `e2e.spec.ts`'s last test offboards its one seeded employee,
+  which would empty the `/provisioning` employee picker
+  (`where: {status: "active"}`) if provisioning tests ran after it and
+  assumed that employee was still selectable. Covers: auth boundary
+  (401 without a session) on both GET and POST, a full UI flow
+  (generate → reveal/copy → table row appears → revoke → status
+  flips, button disables), and direct API/WS integration checks
+  (provisioned token opens a real agent connection; revoke force-closes
+  it with code `4001` and a `token_revoked` reason, then rejects
+  reconnection with 401; revoking an unknown id returns 404, revoking
+  twice is handled cleanly rather than erroring).
+- Hit one real test failure, fixed: `navigator.clipboard.writeText()`
+  threw `NotAllowedError: Write permission denied` under headless
+  Chromium. Added `permissions: ["clipboard-read", "clipboard-write"]`
+  to `playwright.config.ts`'s `use` block — Chromium requires an
+  explicit grant for clipboard access in automated contexts.
+- Verified: `npm run build` (TypeScript check passes, all new routes
+  listed as `ƒ` dynamic), `npm run lint` (clean), and the full
+  Playwright suite — **10/10 passing, twice in a row** (5 from Phase 6
+  unchanged + 5 new Phase 8 tests).
+- Not done (flagging rather than silently skipping): no rate limiting
+  on token generation itself (unlike `/login`, which has one); no UI
+  for editing `sensitivePatterns`-style bulk token policies; the QR
+  code is a copy/reference aid only, not a working scan-to-provision
+  pipeline (the extension has no QR-scanning capability, so building a
+  QR payload the extension can't actually consume would be misleading
+  to claim as "done").
+
+**Status: Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation COMPLETE.** Per-device tokens are genuinely authenticated (not just displayed) by both the WS and REST agent-facing surfaces, revocation is immediate and durable, and all 10 tests (5 existing + 5 new) pass.

@@ -377,12 +377,76 @@ before a first real deploy.
   (dashboard tabs, deployed extension agents), which reconnect through
   their existing backoff logic once the container is back up.
 
+### Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation — ✅ COMPLETE
+- [x] **Backend.** New `ProvisioningToken` Prisma model — only a
+      SHA-256 hash of the raw token is ever stored (same pattern as
+      GitHub/Stripe API keys); the raw value is returned exactly once,
+      in the creation response, and never retrievable again.
+      `src/lib/agentTokens.ts`: `createProvisioningToken()`,
+      `listProvisioningTokens()`, `revokeProvisioningToken()`, and
+      `verifyAgentCredential()` — the last one checks the static
+      `ORG_ACCESS_KEY` first (cheap, no DB hit, preserves all prior
+      behavior) before falling back to a per-device token lookup, so
+      existing agents/tests keep working unchanged.
+      `POST /api/admin/provision-token` (dashboard-session only —
+      never `ORG_ACCESS_KEY`; an agent must never mint its own
+      credentials), `GET /api/admin/provision-token` (list, hash never
+      exposed), `POST /api/admin/provision-token/revoke`. All three
+      audit-logged (`provisioning_token_created`/`_revoked`, added to
+      `AUDIT_ACTIONS`).
+- [x] **Real integration, not a decorative UI.** `server.ts`'s WS
+      upgrade handler and `src/lib/authGuards.ts`'s
+      `requireOrgAccessKey()` (used by the REST `/api/telemetry` POST)
+      both now call `verifyAgentCredential()` instead of the old
+      static-only check — a provisioned token is a genuinely valid
+      agent credential over the *same* `orgAccessKey` query param /
+      header the extension already sends, zero extension-side changes
+      needed. `src/lib/wsRegistry.ts` gained
+      `agentSocketsByTokenId`/`terminateTokenSessions()`, mirroring the
+      existing per-employee termination — revoking a token immediately
+      force-closes any live session authenticated with it (courtesy
+      `terminate_session` notice, then WS close code `4001`, same as
+      employee offboarding) *and* blocks all future reconnect attempts
+      with that token (401 at the WS-upgrade level). Manually verified
+      end-to-end against a running dev server before writing the
+      automated test: generate → connect → revoke → live session
+      terminated → reconnect rejected.
+- [x] **Frontend.** New "Agent Provisioning" sidebar entry →
+      `/provisioning`. `TokenGeneratorCard` (employee picker, optional
+      device name, expiration select, "Generate Agent Token") shows the
+      raw token masked-by-default with reveal/copy, plus a QR code
+      (`qrcode` package) encoding the token + a short manual
+      "quick guide" — no auto-scan provisioning flow exists in the
+      extension, so this is a copy/reference aid, not a functioning
+      scan-to-configure pipeline, and the component's own comments say
+      so rather than implying more than it does. `TokenTable` ("Active
+      Provisioning Keys": device/employee, token ID prefix, status,
+      issued, last-used, one-click Revoke). `ProvisioningWorkspace`
+      ties the two together client-side (mirrors the existing
+      EmployeeTable/OffboardModal state-lifting pattern) so a newly
+      generated or revoked token updates the table immediately, no
+      reload.
+- [x] **Tests.** `tests/provisioning.spec.ts` (new, independent of
+      `tests/e2e.spec.ts` — deliberately doesn't depend on that suite's
+      one seeded employee, which it offboards in its own last test):
+      auth-boundary checks (GET/POST require a dashboard session), a
+      full UI flow (generate → reveal/copy → table row → revoke →
+      status flips), and two integration tests hitting the API/WS
+      directly (a provisioned token opens a real agent WS connection;
+      revoking it force-closes that session with code `4001` and
+      rejects a reconnect with 401; double-revoke and unknown-id are
+      both handled cleanly). 10/10 tests pass across the whole suite
+      (5 from Phase 6 + 5 new), twice in a row.
+- Added `qrcode`/`@types/qrcode` dependencies.
+- Added `permissions: ["clipboard-read", "clipboard-write"]` to
+  `playwright.config.ts` — Chromium refuses `navigator.clipboard
+  .writeText()` headlessly without it, caught by the new Copy-button
+  test.
+
 ## Active Milestone
 
-**Phase 7 — Production Readiness & Deployment Configuration** is
-configuration-ready as of 2026-07-31 — written and locally verified
-(`npm run build`/`lint`/`test:e2e` all still pass with the Docker/Turso
-changes in place), but the Docker build itself and the Turso migration
-path are unverified pending a real Docker daemon and Turso account (see
-Phase 7 flags above). Phase 5's legal/compliance review is the only
-other item still open across all seven phases.
+**Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation**
+is complete as of 2026-07-31. Phase 7 remains "configuration-ready"
+(Docker build and Turso migration path still unverified pending a real
+Docker daemon/Turso account). Phase 5's legal/compliance review is the
+only other item still open across all eight phases.

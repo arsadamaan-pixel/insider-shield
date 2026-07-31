@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { ORG_ACCESS_KEY_HEADER, hasValidDashboardSession, isValidOrgAccessKey } from "@/lib/auth";
+import { ORG_ACCESS_KEY_HEADER, hasValidDashboardSession } from "@/lib/auth";
+import { verifyAgentCredential } from "@/lib/agentTokens";
 
 // Route Handler-only convenience wrappers — kept out of src/lib/auth.ts
 // because that module is also imported by server.ts (loaded via tsx,
@@ -8,8 +9,12 @@ import { ORG_ACCESS_KEY_HEADER, hasValidDashboardSession, isValidOrgAccessKey } 
 // Handlers are always loaded lazily through Next's own request
 // pipeline, so importing "next/server" here is safe.
 
-export function requireOrgAccessKey(request: Request): NextResponse | null {
-  if (!isValidOrgAccessKey(request.headers.get(ORG_ACCESS_KEY_HEADER))) {
+// Async since Phase 8: accepts either the static ORG_ACCESS_KEY or a
+// per-device ProvisioningToken (verifyAgentCredential() checks the
+// static key first, no DB hit, before falling back to a token lookup).
+export async function requireOrgAccessKey(request: Request): Promise<NextResponse | null> {
+  const credential = await verifyAgentCredential(request.headers.get(ORG_ACCESS_KEY_HEADER));
+  if (!credential.valid) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   return null;

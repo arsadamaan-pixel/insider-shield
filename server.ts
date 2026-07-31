@@ -5,7 +5,8 @@ import { ingestDlpEvent, ingestHeartbeat, isValidDlpEvent, isValidHeartbeat } fr
 import { sanitizePolicyUpdate, setPolicy } from "@/lib/policyStore";
 import { prisma } from "@/lib/prisma";
 import { agentSockets, dashboardSockets, broadcast, registerConnection } from "@/lib/wsRegistry";
-import { getSessionOperator, hasValidDashboardSession, isValidOrgAccessKey } from "@/lib/auth";
+import { getSessionOperator, hasValidDashboardSession } from "@/lib/auth";
+import { verifyAgentCredential } from "@/lib/agentTokens";
 import { logAuditEvent } from "@/lib/auditLog";
 import type { WsRole } from "@/types";
 
@@ -126,8 +127,15 @@ app.prepare().then(() => {
     // an unauthenticated caller must get a uniform 401 with zero
     // information leakage, not a chance to probe whether a given
     // employeeEmail exists/is active.
+    //
+    // verifyAgentCredential() accepts either the static org-wide
+    // ORG_ACCESS_KEY or a per-device ProvisioningToken (Phase 8) — same
+    // "orgAccessKey" query param either way, no extension-side change
+    // needed to support the new per-device tokens.
+    let agentTokenId: string | undefined;
     if (role === "agent") {
-      if (!isValidOrgAccessKey(searchParams.get("orgAccessKey"))) {
+      const credential = await verifyAgentCredential(searchParams.get("orgAccessKey"));
+      if (!credential.valid) {
         void logAuditEvent({
           actorEmail: "unknown",
           action: "agent_auth_failed",
@@ -139,6 +147,7 @@ app.prepare().then(() => {
         socket.destroy();
         return;
       }
+      agentTokenId = credential.tokenId;
     } else {
       if (!hasValidDashboardSession(req.headers.cookie)) {
         void logAuditEvent({
@@ -170,7 +179,7 @@ app.prepare().then(() => {
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      registerConnection(ws, role, { employeeEmail, ipAddress });
+      registerConnection(ws, role, { employeeEmail, tokenId: agentTokenId, ipAddress });
 
       ws.on("message", (raw) => {
         const handler =

@@ -20,6 +20,8 @@ export const AUDIT_ACTIONS = [
   "login_failed",
   "agent_auth_failed",
   "dashboard_auth_failed",
+  "provisioning_token_created",
+  "provisioning_token_revoked",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

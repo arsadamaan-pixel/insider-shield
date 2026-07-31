@@ -5,3 +5,4 @@ export * from "./heartbeat";
 export * from "./websocket";
 export * from "./asset";
 export * from "./auditLog";
+export * from "./provisioningToken";

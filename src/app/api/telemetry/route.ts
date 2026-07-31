@@ -17,7 +17,7 @@ import { requireDashboardSession, requireOrgAccessKey } from "@/lib/authGuards";
 // legitimate agent POSTs aren't rejected before reaching this check.
 
 export async function POST(request: Request) {
-  const authError = requireOrgAccessKey(request);
+  const authError = await requireOrgAccessKey(request);
   if (authError) return authError;
 
   let body: unknown;

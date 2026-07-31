@@ -76,6 +76,36 @@ model Heartbeat {
   @@index([employeeEmail])
 }
 
+// Per-device/per-employee credentials an admin can generate, list, and
+// revoke for the extension agent to present instead of (or alongside)
+// the single org-wide ORG_ACCESS_KEY — see src/lib/agentTokens.ts. Only
+// a SHA-256 hash of the raw token is ever stored; the raw value is
+// returned once in the creation API response and never persisted or
+// retrievable again (same pattern as GitHub/Stripe API keys).
+model ProvisioningToken {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  // First chars of the raw token — safe to display so an admin can tell
+  // rows apart in the UI without ever re-exposing the full secret.
+  tokenPrefix String
+  // Employee.id — nullable, a token can be generated before an employee
+  // is assigned (e.g. pre-provisioning a device for a new hire).
+  employeeId  String?
+  deviceName  String?
+  status      String    @default("active") // "active" | "revoked"
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  // Bumped on every successful auth — lets the dashboard distinguish
+  // "issued but never used" from "actively in use" without a separate
+  // stored status value.
+  lastUsedAt  DateTime?
+
+  @@index([status])
+  @@index([employeeId])
+}
+
 // Append-only security audit trail — see src/lib/auditLog.ts's
 // logAuditEvent(). `action` is a free-form string (matches this
 // schema's existing convention for Employee.status/DlpAlert.severity),

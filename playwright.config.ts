@@ -23,6 +23,10 @@ export default defineConfig({
   use: {
     baseURL: E2E_BASE_URL,
     trace: "retain-on-failure",
+    // Chromium requires explicit grant for navigator.clipboard.writeText
+    // to work headlessly — needed by the Phase 8 provisioning UI test's
+    // "Copy" button.
+    permissions: ["clipboard-read", "clipboard-write"],
   },
 
   webServer: {

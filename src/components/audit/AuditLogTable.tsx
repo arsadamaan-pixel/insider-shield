@@ -8,6 +8,8 @@ const ACTION_STYLES: Record<string, string> = {
   login_failed: "bg-red-500/15 text-red-400",
   agent_auth_failed: "bg-red-500/15 text-red-400",
   dashboard_auth_failed: "bg-red-500/15 text-red-400",
+  provisioning_token_created: "bg-emerald-500/15 text-emerald-400",
+  provisioning_token_revoked: "bg-red-500/15 text-red-400",
 };
 
 const DEFAULT_ACTION_STYLE = "bg-slate-700/40 text-slate-300";
