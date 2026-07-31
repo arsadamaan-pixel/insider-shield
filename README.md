@@ -142,6 +142,11 @@ applied yet (step 2).
   connection (both dashboard tabs and any deployed extension agents)
   will drop and reconnect through their existing backoff logic when
   that happens. This is a free-tier trade-off, not a bug in this app.
+  In production, `server.ts` self-pings its own `/api/health` every 10
+  minutes to keep the instance awake and avoid this — which trades away
+  the instance-hours savings the spin-down exists to provide, so check
+  Render's current free-tier monthly hour limits against your expected
+  traffic if you'd rather let it sleep instead.
 - This deployment path is Render-specific because it needs a
   **custom Node server** (`server.ts`) for the WebSocket transport —
   Vercel's serverless/edge functions cannot hold a long-lived WS

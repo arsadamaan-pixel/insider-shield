@@ -29,6 +29,37 @@ const port = Number(process.env.PORT) || 3000;
 const app = next({ dev, hostname: "localhost", port });
 const handle = app.getRequestHandler();
 
+// --- Keep-alive (Render free-tier spin-down prevention) ----------------
+// Render's free web-service plan spins down after a period of inbound
+// inactivity; self-pinging /api/health keeps it warm. RENDER_EXTERNAL_URL
+// is set automatically by Render for every web service — the hardcoded
+// fallback only matters if that's ever missing.
+//
+// Trade-off worth knowing about (see README.md/WORKLOG.md): pinging
+// every 10 minutes keeps the instance awake ~24/7, which burns through
+// Render's free-tier monthly instance-hours allotment much faster than
+// letting it sleep between real visits would — check current Render
+// free-tier limits before relying on this for a low-traffic deployment.
+const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const KEEP_ALIVE_URL = `${process.env.RENDER_EXTERNAL_URL || "https://insider-shield.onrender.com"}/api/health`;
+
+async function pingSelf(): Promise<void> {
+  try {
+    const res = await fetch(KEEP_ALIVE_URL);
+    console.log(`[Keep-Alive] Ping sent - Status: ${res.status}`);
+  } catch (err) {
+    // Never let a network hiccup (or the instance still being asleep)
+    // take down the process — this is best-effort housekeeping, not a
+    // health check anything else depends on.
+    console.warn("[Keep-Alive] Ping failed:", err instanceof Error ? err.message : err);
+  }
+}
+
+function keepAlive(): void {
+  void pingSelf(); // one immediately, for visibility right after boot
+  setInterval(pingSelf, KEEP_ALIVE_INTERVAL_MS);
+}
+
 interface AgentIdentity {
   employeeEmail?: string;
   ipAddress?: string;
@@ -195,5 +226,10 @@ app.prepare().then(() => {
 
   server.listen(port, () => {
     console.log(`> Ready on http://localhost:${port} (WS at /api/ws, roles: agent, dashboard)`);
+
+    // Production only — a local `npm run dev` or the Playwright test
+    // server (both NODE_ENV !== "production") must never silently ping
+    // the real deployed URL in the background.
+    if (!dev) keepAlive();
   });
 });

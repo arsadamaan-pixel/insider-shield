@@ -376,6 +376,14 @@ before a first real deploy.
   down on inactivity; a cold start drops any open WebSocket connections
   (dashboard tabs, deployed extension agents), which reconnect through
   their existing backoff logic once the container is back up.
+- [x] **Keep-alive self-ping — added 2026-07-31.** `server.ts` pings its
+      own `/api/health` every 10 minutes (production only —
+      `NODE_ENV !== "production"` skips it entirely, so local dev/test
+      never pings the real deployed URL) to keep the Render free-tier
+      instance from spinning down. This trades away the instance-hours
+      savings the spin-down behavior exists to provide — self-pinging
+      keeps it awake roughly 24/7 — so it's a deliberate choice to
+      prioritize uptime over free-tier hour budget; see `WORKLOG.md`.
 
 ### Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation — ✅ COMPLETE
 - [x] **Backend.** New `ProvisioningToken` Prisma model — only a

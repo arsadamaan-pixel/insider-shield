@@ -1143,3 +1143,46 @@
   to claim as "done").
 
 **Status: Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation COMPLETE.** Per-device tokens are genuinely authenticated (not just displayed) by both the WS and REST agent-facing surfaces, revocation is immediate and durable, and all 10 tests (5 existing + 5 new) pass.
+
+## 2026-07-31 — Render Free-Tier Keep-Alive (Self-Ping)
+
+- Added a `keepAlive()`/`pingSelf()` pair to `server.ts` (the actual
+  entry point — the task described it as "e.g. `src/server.ts`", but
+  this project's custom server has always lived at the repo root, so
+  implemented it there rather than creating a second one). Pings
+  `${RENDER_EXTERNAL_URL || "https://insider-shield.onrender.com"}/api/health`
+  every 10 minutes, one immediate ping right after `server.listen()`'s
+  callback fires for visibility, wrapped in try/catch so a network
+  failure (or the instance still being asleep) only logs a warning and
+  never crashes the process.
+- **Deliberate deviation from a literal reading:** gated the actual
+  `keepAlive()` call on `!dev` (i.e., `NODE_ENV === "production"`)
+  rather than calling it unconditionally after `server.listen()`.
+  Calling it unconditionally would mean every `npm run dev` and every
+  Playwright test run (`tests/env.ts` sets `NODE_ENV: "development"`
+  for the test webserver) silently starts a background interval hitting
+  the *real* production URL every 10 minutes for as long as that local
+  process stays open — clearly not the intent, and confirmed via the
+  full test suite: the keep-alive log line never appears in the
+  Playwright run's webserver output, only when actually started with
+  `NODE_ENV=production`.
+- Flagged in a comment (and here): self-pinging keeps the Render
+  free-tier instance awake roughly 24/7, which consumes free-tier
+  monthly instance-hours much faster than letting it sleep between
+  real visits would — worth checking Render's current free-tier limits
+  against expected traffic before relying on this long-term.
+- Verified manually before considering this done: started the real
+  built server locally with `NODE_ENV=production PORT=3050 npx tsx
+  server.ts` (using the hardcoded fallback URL, since
+  `RENDER_EXTERNAL_URL` isn't set locally) and confirmed the exact log
+  line `[Keep-Alive] Ping sent - Status: 200` appeared — a real network
+  round-trip to the live `insider-shield.onrender.com` deployment. This
+  also incidentally reconfirmed that the `/api/health` unauthorized bug
+  from the earlier Render debugging session is fixed and live in
+  production (status 200, not 401).
+- Verified: `npm run build` (TypeScript check passes), `npm run lint`
+  (clean), and the full Playwright suite — **10/10 passing** (all of
+  Phase 6 + Phase 8's tests, unchanged) — confirming the keep-alive
+  addition has zero effect on local dev/test behavior.
+
+**Status: Render keep-alive self-ping added and verified (manual production-mode run + full test suite unaffected).**
