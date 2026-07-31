@@ -49,10 +49,23 @@ turso db show insider-shield --url          # → libsql://insider-shield-<org>.
 turso db tokens create insider-shield       # → a long JWT — this is TURSO_AUTH_TOKEN
 ```
 
-### 2. Apply the schema to it
+### 2. Schema migrations — automatic on every deploy
 
-`prisma/migrations/*` already exist (committed) — you're applying the
-same migrations used locally, not writing new ones.
+**You shouldn't need to do this step manually anymore.** The Docker
+image's `CMD` now runs `prisma migrate deploy` every time the container
+starts, before the app boots — confirmed working against a real Turso
+database in production (an earlier deploy hit a 500 on a page whose
+table hadn't been created yet, because a migration added after the
+last manual `migrate deploy` run was never re-applied; the fix was
+making this automatic, not switching to a different command — see
+`WORKLOG.md`). `migrate deploy` only applies the already-committed
+migration files in `prisma/migrations/` in order — it never diffs or
+drops anything speculatively, unlike `prisma db push`, so a normal
+deploy can't silently lose production data.
+
+If you ever need to run it manually (first-time setup before the first
+deploy, or to unblock a currently-broken deployment without waiting for
+a redeploy):
 
 ```bash
 DATABASE_URL="libsql://insider-shield-<org>.turso.io" \
@@ -60,11 +73,8 @@ TURSO_AUTH_TOKEN="<token from above>" \
 npx prisma migrate deploy
 ```
 
-**If that fails** (Prisma's migration engine has historically had
-uneven support for the libsql/Hrana wire protocol — this hasn't been
-verified against a real Turso database in the environment this was
-built in, so treat it as "try first, don't assume"), fall back to
-applying each migration's raw SQL directly via the Turso CLI, in order:
+If that ever fails for a specific database, fall back to applying each
+migration's raw SQL directly via the Turso CLI, in order:
 
 ```bash
 for f in prisma/migrations/*/migration.sql; do
@@ -135,8 +145,14 @@ applied yet (step 2).
   boots cleanly on your machine/CI before treating this as
   production-ready. See its header comment and `WORKLOG.md` for exactly
   what to check.
-- The Turso migration step (§2) likewise hasn't been verified against a
-  real Turso database — same reason.
+- The Docker image itself is still unverified (see above) — the
+  `prisma migrate deploy` step it now runs automatically at container
+  start, however, **is** confirmed working against a real Turso
+  database in production (see `WORKLOG.md`'s 2026-07-31 entry). If a
+  future migration ever conflicts with existing production data,
+  `migrate deploy` fails loudly and the container won't start rather
+  than silently applying a destructive change — that's the intended
+  behavior, not a bug to work around by switching to `db push`.
 - Render's **free** web service plan spins down after periods of
   inactivity and cold-starts on the next request; the WebSocket
   connection (both dashboard tabs and any deployed extension agents)

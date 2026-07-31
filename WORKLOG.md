@@ -1186,3 +1186,94 @@
   addition has zero effect on local dev/test behavior.
 
 **Status: Render keep-alive self-ping added and verified (manual production-mode run + full test suite unaffected).**
+
+## 2026-07-31 — Fixed: `/provisioning` 500 on production (missing table)
+
+- Root cause: `prisma migrate deploy` had been run manually against the
+  production Turso database once, early on — but Phase 8 added a new
+  migration (`add_provisioning_tokens`) afterward, and nobody re-ran it
+  against Turso before deploying that code. The app tried to query a
+  table that didn't exist yet in production → 500 on `/provisioning`.
+  Confirms — usefully — that `prisma migrate deploy` genuinely does
+  work against a real Turso database in practice; this had only been
+  "try first, don't assume" hedged in `README.md` before, without
+  actual production evidence either way.
+- **Declined the requested `prisma db push --accept-data-loss` /
+  postinstall approach, implemented the safe equivalent instead —
+  explained why before writing any code:**
+  - `db push` diffs the live database against the schema and pushes
+    whatever changes are needed to make them match, destructively if
+    necessary — `--accept-data-loss` is literally the flag that
+    authorizes it to drop columns/tables/rows without asking. Wiring
+    that into an automatic step that runs on *every* deploy, forever,
+    means the first future migration that's structurally destructive
+    (a column rename, a `NOT NULL` addition without a default on a
+    populated table, anything like that) would silently wipe
+    production data — employees, DLP alerts, the audit trail itself —
+    with no review step. For a product whose entire purpose is
+    security/audit logging, silently losing that data on a routine
+    deploy is a serious failure mode, not an acceptable trade-off for
+    convenience.
+  - `db push` also doesn't participate in the `prisma/migrations/`
+    history this project already uses (every phase from 3 onward has
+    committed real migration files) — mixing the two workflows risks
+    the migration-tracking table and the schema silently drifting out
+    of sync with each other over time.
+  - Running it from `postinstall` specifically compounds this: that
+    script fires on *any* `npm install`, in any environment (a fresh
+    local clone, CI, the Docker build stage) — an automatic
+    destructive-capable schema command firing that broadly is a
+    foot-gun independent of the `db push` question.
+  - `prisma migrate deploy` (already used throughout this project —
+    locally, in the e2e test's `global-setup.ts`, and now here) only
+    applies the already-committed, already-reviewed migration files in
+    order. It cannot drop or alter anything speculatively; if a
+    migration ever genuinely conflicts with existing data, it fails
+    loudly instead of pushing through. That's the actual fix for
+    "schema doesn't automatically sync on deploy" without the data-loss
+    exposure.
+- Implemented in `Dockerfile`: `CMD` changed from
+  `["node_modules/.bin/tsx", "server.ts"]` to
+  `["sh", "-c", "npx prisma migrate deploy && exec node_modules/.bin/tsx server.ts"]`
+  — migrations now run every time the container actually starts, which
+  is the only point where Render has injected the real
+  `DATABASE_URL`/`TURSO_AUTH_TOKEN` (they're runtime env vars, not
+  available during the earlier `docker build` stage). Kept the `exec`
+  in the second half of the chain specifically so `SIGTERM` still
+  reaches the `tsx` process directly rather than an intermediate shell
+  that might not forward it — same reasoning the original exec-form
+  `CMD` comment already had, just now inside a shell chain instead of
+  a bare exec array.
+- Considered Render's `preDeployCommand` blueprint field (checked
+  Render's own docs via WebFetch again, per the established habit of
+  verifying Render-specific config rather than guessing) — it's real
+  and explicitly recommended by Render for migrations, but the docs
+  don't clearly confirm whether it applies to `runtime: docker`
+  services specifically (only that `buildCommand`/`startCommand` are
+  "required for non-Docker services," leaving `preDeployCommand`'s
+  Docker-runtime behavior unstated). Rather than add a render.yaml
+  field that might silently be a no-op for a Docker service and create
+  false confidence, went with the Dockerfile `CMD` approach, which is
+  guaranteed to run regardless of that ambiguity.
+- Updated `README.md`'s deployment guide: the manual `prisma migrate
+  deploy` step is now framed as "shouldn't be needed anymore, here's
+  how to run it manually if you do" (first-time setup, or to unblock a
+  currently-broken deployment without waiting for a redeploy) rather
+  than a required per-deploy step. Removed the "unverified against a
+  real Turso database" hedge in the known-limitations section — this
+  incident is real evidence it works — and added a note that a future
+  destructive-migration failure is supposed to fail loudly, not
+  something to fix by switching commands.
+- **Immediate remediation for the currently-broken live deployment:**
+  pushing this fix and triggering a redeploy is sufficient — the new
+  `CMD` will run `migrate deploy` on that deploy's container start and
+  create the missing table automatically. If the fix needs to be live
+  before a redeploy happens, the manual command in `README.md`'s
+  now-renumbered step 2 (`DATABASE_URL=... TURSO_AUTH_TOKEN=... npx
+  prisma migrate deploy`) can be run directly against the production
+  Turso database to unblock it immediately.
+- Verified: `npm run build`, `npm run lint`, and the full Playwright
+  suite (10/10) all still pass — this change only touches the
+  Dockerfile, nothing in the app's own code or test-time behavior.
+
+**Status: Root cause identified and fixed via an automatic, non-destructive `prisma migrate deploy` on every container start — not via the requested `db push --accept-data-loss`, for the data-loss reasons above. Currently-live production instance needs either a redeploy or the manual command in README.md to actually pick up the fix.**

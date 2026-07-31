@@ -384,6 +384,24 @@ before a first real deploy.
       savings the spin-down behavior exists to provide — self-pinging
       keeps it awake roughly 24/7 — so it's a deliberate choice to
       prioritize uptime over free-tier hour budget; see `WORKLOG.md`.
+- [x] **Automatic production schema sync — added 2026-07-31, fixing a
+      real production 500 on `/provisioning`.** `Dockerfile`'s `CMD`
+      now runs `prisma migrate deploy` on every container start before
+      the app boots — the only point Render's real runtime env vars
+      (`DATABASE_URL`/`TURSO_AUTH_TOKEN`) are present. Root cause: a
+      migration added in Phase 8 was never re-applied to the production
+      Turso database after the one-time manual setup in Phase 7.
+      Deliberately **not** `prisma db push --accept-data-loss` (which
+      was what was actually requested) — `db push` diffs and pushes
+      schema changes destructively when needed, and running that
+      automatically on every deploy risks silently dropping production
+      data (including the audit trail) the first time a future
+      migration is structurally destructive. `migrate deploy` only
+      applies already-committed migration files in order and fails
+      loudly on a genuine conflict instead. See `WORKLOG.md` for the
+      full reasoning and the Render `preDeployCommand` alternative
+      considered (and not used, due to unclear Docker-runtime support
+      in Render's own docs).
 
 ### Phase 8 — Enterprise Provisioning & One-Click Agent Token Generation — ✅ COMPLETE
 - [x] **Backend.** New `ProvisioningToken` Prisma model — only a

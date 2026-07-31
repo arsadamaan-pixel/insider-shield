@@ -61,7 +61,23 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Exec form + the tsx binary directly (not `npm run start:prod`) so
-# SIGTERM from the platform reaches this process directly instead of an
-# intermediate npm process that may not forward it.
-CMD ["node_modules/.bin/tsx", "server.ts"]
+# Runs `prisma migrate deploy` — NOT `db push` — every time the
+# container starts, before the app itself boots. migrate deploy only
+# applies the already-reviewed, already-committed migration files in
+# prisma/migrations/ in order; it never diffs/drops/alters anything
+# speculatively, so it can't silently discard production data the way
+# `db push --accept-data-loss` can. This is also the point where
+# DATABASE_URL/TURSO_AUTH_TOKEN are actually the real production
+# values — Render injects them into the running container, not into
+# the `docker build` step above, so this can't run any earlier than
+# container start and still see the right database. If a migration
+# ever genuinely conflicts with existing data, this fails loudly and
+# the container never starts serving traffic with a broken schema,
+# which is the correct failure mode — not something to "fix" by
+# switching to a command that pushes through such conflicts instead.
+#
+# sh -c form (not exec form) so SIGTERM still reaches the tsx process:
+# `exec` replaces the shell with the final command instead of leaving
+# it as a child, so the platform's stop signal still hits the real
+# process directly.
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node_modules/.bin/tsx server.ts"]
