@@ -1613,3 +1613,43 @@ real endpoints ("every time cannot do this").
   as "Unnamed device / shared org key" until the agent sends new ones.
 
 **Status: Connected agents are now visible on their own dashboard page, including agents whose identity doesn't match any employee record — which was the actual gap.**
+
+## 2026-07-31 — Session handoff (continuing on a different machine)
+
+Everything through this point is committed and pushed to
+`origin/main`. Picking up on another machine: see README.md's
+"Picking the project up on another machine" — the short version is that
+`.env`, `node_modules/`, `dev.db`, and `src/generated/prisma/` are all
+deliberately uncommitted and must be recreated, and on an Apple Silicon
+Mac `better-sqlite3` must be rebuilt for arm64 via `npm install` +
+`npm approve-scripts` (it cannot be carried over from the Linux box).
+
+**State at handoff — working and verified in production:**
+- Dashboard live at `https://insider-shield.onrender.com` (Render +
+  Turso, both free tier).
+- Agent provisioning, per-device tokens, revocation, audit trail,
+  policy OTA push, and the Endpoints view all working end-to-end.
+- A real Chrome extension agent connected successfully
+  (`agentConnections: 1`) and appeared under Endpoints.
+- Full suite: 15/15 Playwright tests, `build` and `lint` clean.
+
+**Known open items, in rough priority order:**
+1. `manifest.json` still has no `managed_schema`, so
+   `chrome.storage.managed` returns nothing and every managed-policy
+   code path in the extension is dead. The "zero-touch enterprise
+   deployment" premise in `CLAUDE.md` therefore isn't real yet —
+   devices still need the one-time Options-page setup. This is the
+   biggest gap between the stated product and what exists.
+2. `Dockerfile` has still never been run through a local `docker build`
+   (no Docker daemon on the dev machine it was written on) — it works
+   on Render, but that's the only evidence.
+3. Phase 5's legal/compliance review of DLP data collection (notice,
+   consent, retention, jurisdiction) remains untouched, and matters
+   before this is pointed at anyone's real browsing.
+4. `extension.crx` at the repo root is a stale packed build from an
+   earlier phase and should probably just be deleted.
+5. No CI — nothing runs `npm run test:e2e` automatically on push.
+6. Login rate limiting is in-memory per-process, so it resets on deploy
+   and wouldn't hold across multiple instances.
+
+**Status: Clean handoff point — no uncommitted work, no half-finished changes.**

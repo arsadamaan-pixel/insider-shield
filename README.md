@@ -22,6 +22,67 @@ sign in with the `BEARER_TOKEN` value from your `.env`.
 directly — that's what attaches the `ws` WebSocket server; stock
 Next.js dev/start have no WebSocket upgrade support at all.
 
+## Picking the project up on another machine
+
+Everything needed is in git — but four things are deliberately **not**
+committed and have to be recreated locally, which is what makes a fresh
+clone look broken if you skip them:
+
+| Not in git | Why | How to restore |
+|---|---|---|
+| `.env` | secrets | `cp .env.example .env`, then fill in values |
+| `node_modules/` | platform-specific | `npm install` |
+| `dev.db` | local data | `npm run db:migrate && npm run db:seed` |
+| `src/generated/prisma/` | generated code | automatic — `npm install` runs `prisma generate` |
+
+```bash
+git clone git@github.com:arsadamaan-pixel/insider-shield.git
+cd insider-shield
+
+npm install
+# This project uses npm's allowScripts gate. If install warns about
+# packages with unapproved install scripts, approve the ones that need
+# to compile native binaries — better-sqlite3 in particular will not
+# work without it, and on an Apple Silicon Mac it must be rebuilt for
+# arm64 rather than reusing anything from another machine:
+#   npm approve-scripts better-sqlite3 prisma @prisma/engines esbuild sharp unrs-resolver
+
+cp .env.example .env      # fill in ORG_ACCESS_KEY / BEARER_TOKEN / SESSION_SECRET
+npm run db:migrate
+npm run db:seed
+npm run dev
+```
+
+For the test suite, install the browser once per machine:
+
+```bash
+npx playwright install chromium
+npm run test:e2e          # expect 15/15 passing
+```
+
+To load the extension: `chrome://extensions` → Developer mode → **Load
+unpacked** → select the `extension/` directory. Then open its Options
+page and set the access key and server URL (see
+[Agent setup](#agent-setup) below).
+
+> `extension.crx` at the repo root is a stale packed build from an
+> earlier phase — it predates the current icons, status badge, and
+> keep-alive logic. Load the `extension/` directory unpacked instead;
+> the `.crx` is not rebuilt by anything and should probably be deleted.
+
+### Agent setup
+
+One-time, per device:
+
+1. Dashboard → **Agent Provisioning** → *Generate Agent Token* → copy it.
+2. Extension Options page → paste it into **Org access key**, set
+   **Server URL** to `wss://<your-deployment>/api/ws` (or
+   `ws://localhost:3000/api/ws` for local), Save.
+3. The agent connects immediately and appears under **Endpoints**.
+4. DLP collection stays off until enabled from **Policies** — the
+   connection is intentionally separate from the kill switch so the
+   dashboard can turn devices on remotely.
+
 ## Tests
 
 ```bash
