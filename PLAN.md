@@ -293,10 +293,96 @@ milestone status.
   (`tests/seed-e2e-employee.ts`), the same pattern `prisma/seed.ts`
   already used successfully — see `WORKLOG.md`.
 
+### Phase 7 — Production Readiness & Deployment Configuration — ✅ CONFIGURATION READY
+Named "configuration ready" rather than "complete": everything below was
+written, code-reviewed, and passes `npm run build`/`lint`/`test:e2e`,
+but the two genuinely external pieces (a real Docker build, and Prisma
+Migrate against a real Turso database) could not be exercised in the
+environment this was built in — no Docker daemon was available, and no
+Turso account/credentials exist here. See the flags below and
+`WORKLOG.md`/`README.md` for exactly what that means and what to verify
+before a first real deploy.
+
+- [x] **Docker & production build.** Multi-stage `Dockerfile`: `builder`
+      stage (Debian-based `node:22-bookworm-slim` + a C toolchain for
+      better-sqlite3/sharp's native bindings) runs the full `npm ci` +
+      `next build`; `runner` stage copies the already-built
+      `node_modules`/`.next`/source into a clean base image and runs
+      `server.ts` via `tsx` directly (exec form, for correct `SIGTERM`
+      handling) — not `next start`, which per the Phase 3 note still has
+      no WebSocket transport at all. `node_modules` is copied unpruned
+      (devDependencies included) rather than a `--omit=dev` install,
+      because `tsx` compiles `server.ts`'s TypeScript on the fly at
+      runtime and `prisma.config.ts` (needed for any one-off `prisma
+      migrate deploy` run against production) needs `dotenv` — both
+      real runtime/ops dependencies despite conventionally living in
+      `devDependencies`. Includes a Docker `HEALTHCHECK` hitting
+      `/api/health` via Node's built-in `fetch` (no `curl` needed in the
+      image). `render.yaml` blueprint (schema verified against Render's
+      current docs, not assumed from training data — `runtime: docker`,
+      not the older/discouraged `env: docker`) defines a free-plan
+      Docker web service with `healthCheckPath: /api/health`,
+      `generateValue: true` for the three app secrets, `sync: false` for
+      `DATABASE_URL`/`TURSO_AUTH_TOKEN`.
+- [x] **Database flexibility (Turso/libsql).** `src/lib/prisma.ts` now
+      branches on `DATABASE_URL`'s scheme: a plain `file:` URL still
+      uses `@prisma/adapter-better-sqlite3` (local dev/CI, unchanged
+      behavior — all of Phase 6's e2e tests still pass against this
+      path); a `libsql://`/`http(s)://` URL uses the new
+      `@prisma/adapter-libsql` adapter with `TURSO_AUTH_TOKEN`, throwing
+      a clear error at startup if the token is missing rather than
+      failing obscurely later. No `prisma/schema.prisma` changes needed
+      — both adapters implement the same `provider = "sqlite"` Prisma
+      datasource; only the driver differs.
+- [x] **Health & readiness endpoint.** `src/app/api/health/route.ts`
+      (new — didn't exist before this phase): runs `SELECT 1` through
+      the live Prisma connection (catches and reports real DB failures,
+      not a hardcoded 200), and reports live WebSocket connection counts
+      read directly from `src/lib/wsRegistry.ts`'s registry (the same
+      in-process state `terminateEmployeeSessions()` uses) — genuine
+      status, not a placeholder. Returns 200 when the DB check passes,
+      503 otherwise, matching what container healthchecks expect.
+      Excluded from `src/proxy.ts`'s dashboard-session gate (a
+      healthcheck can't present a session cookie); reveals only
+      aggregate counts, never employee/alert data, so leaving it
+      unauthenticated is safe.
+- [x] **Dependency-placement fix.** `@prisma/client`,
+      `@prisma/adapter-better-sqlite3`, and `tsx` moved from
+      `devDependencies` to `dependencies` — all three are imported
+      directly by runtime code (`src/lib/prisma.ts`, `server.ts`) and
+      would break under any `--omit=dev`-style production install. This
+      was flagged (but deliberately left as-is, per explicit instruction
+      at the time) back in the SQLite Data Persistence work — Phase 7 is
+      the point where it would have actually mattered, so fixed now.
+- [x] **Docs.** `README.md` rewritten from the default create-next-app
+      template: local dev setup, `npm run test:e2e`, and a full Render +
+      Turso deployment walkthrough (Turso CLI setup, schema application
+      — with the honest caveat below — Render blueprint vs. manual
+      setup, the env var reference table, and a "known limitations"
+      section). `.env.example` updated with `TURSO_AUTH_TOKEN`.
+- **Flag — Turso migration path unverified.** `prisma migrate deploy`
+  may not work directly against a `libsql://` URL — Prisma's migration
+  engine has historically had uneven libsql/Hrana protocol support, and
+  this genuinely could not be checked without a real Turso account.
+  README.md documents a fallback (piping each
+  `prisma/migrations/*/migration.sql` through `turso db shell`
+  directly) and says explicitly to try the direct path first rather
+  than assuming either way.
+- **Flag — Dockerfile unverified.** Written and reasoned through
+  carefully (see its own header comment) but never actually run through
+  `docker build`/`docker run` — no Docker daemon was available in this
+  environment. Verify locally or in CI before a real deploy.
+- Free-tier trade-off, not a bug: Render's free web service plan spins
+  down on inactivity; a cold start drops any open WebSocket connections
+  (dashboard tabs, deployed extension agents), which reconnect through
+  their existing backoff logic once the container is back up.
+
 ## Active Milestone
 
-**Phase 6 — Automated E2E Testing & Hardening** is complete as of
-2026-07-31 (see checklist above). Phase 5's two remaining items — legal/
-compliance review and the Vercel deployment pipeline — are still open;
-everything else through Phase 6 is done and covered by
-`npm run test:e2e`.
+**Phase 7 — Production Readiness & Deployment Configuration** is
+configuration-ready as of 2026-07-31 — written and locally verified
+(`npm run build`/`lint`/`test:e2e` all still pass with the Docker/Turso
+changes in place), but the Docker build itself and the Turso migration
+path are unverified pending a real Docker daemon and Turso account (see
+Phase 7 flags above). Phase 5's legal/compliance review is the only
+other item still open across all seven phases.

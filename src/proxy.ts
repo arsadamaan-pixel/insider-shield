@@ -8,11 +8,14 @@ import { hasValidDashboardSession } from "@/lib/auth";
 // usage is safe here.
 //
 // Gates the entire dashboard (every page + every remaining /api/*
-// route) behind the BEARER_TOKEN-derived session cookie. Two
-// exclusions: /login and /api/auth/login (the credential-entry surface
-// itself) and /api/telemetry (agent traffic, gated by ORG_ACCESS_KEY
-// instead inside that route — a blanket dashboard-session check here
-// would incorrectly reject legitimate agent requests).
+// route) behind the BEARER_TOKEN-derived session cookie. Exclusions:
+// /login and /api/auth/login (the credential-entry surface itself),
+// /api/telemetry (agent traffic, gated by ORG_ACCESS_KEY instead inside
+// that route — a blanket dashboard-session check here would incorrectly
+// reject legitimate agent requests), and /api/health (Phase 7 — a
+// container platform's healthcheck, e.g. Render or `docker
+// HEALTHCHECK`, can't present a session cookie; the route itself
+// reveals only aggregate connection counts, never employee/alert data).
 //
 // /api/ws is not excluded because it doesn't need to be: WebSocket
 // upgrade requests fire Node's 'upgrade' event, never the 'request'
@@ -20,7 +23,7 @@ import { hasValidDashboardSession } from "@/lib/auth";
 // regardless of the matcher — server.ts's own checks are the sole gate
 // for that surface, not defense-in-depth on top of this file.
 
-const PUBLIC_PATHS = ["/login", "/api/auth/login"];
+const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/health"];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

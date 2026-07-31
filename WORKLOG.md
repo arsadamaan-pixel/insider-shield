@@ -899,3 +899,121 @@
   (e.g. rate-limited login, agent auth failure, geo-compliance map).
 
 **Status: Phase 6 — Automated E2E Testing & Hardening COMPLETE.** All 5 required scenarios pass reproducibly against a disposable test database; `npm run build`/`lint` remain green.
+
+## 2026-07-31 — Phase 7: Production Readiness & Deployment Configuration
+
+- Checked what already existed before writing anything: no
+  `Dockerfile`/`.dockerignore`/`render.yaml`, no `/api/health` route, no
+  `docker` CLI or daemon available in this sandbox (`docker --version`:
+  command not found). All of Phase 7 had to be written and verified
+  through means other than an actual container run.
+- `src/lib/prisma.ts`: added `isRemoteLibsqlUrl()` — branches
+  `createClient()` on whether `DATABASE_URL` starts with `libsql://`,
+  `http://`, or `https://`. Local `file:` URLs are unchanged
+  (`@prisma/adapter-better-sqlite3`, confirmed via a full
+  `npm run test:e2e` pass afterward — the e2e suite's own DB path
+  exercises exactly this branch). The remote branch uses the new
+  `@prisma/adapter-libsql` (installed at the exact same `7.9.1` version
+  as the rest of the Prisma toolchain — checked `npm view
+  @prisma/adapter-libsql dist-tags` rather than assuming a version) and
+  throws a clear startup error if `TURSO_AUTH_TOKEN` is missing, instead
+  of failing obscurely on the first query. No `prisma/schema.prisma`
+  change needed — confirmed both adapters implement the same
+  `provider = "sqlite"` datasource, only the driver differs.
+- **Flag, not fixed (documented instead):** whether `prisma migrate
+  deploy` itself works against a `libsql://` URL is unverified — no
+  Turso account exists in this environment to test against, and
+  Prisma's Rust-based schema-engine has historically not spoken the
+  libsql/Hrana wire protocol directly (this is a documented real-world
+  gap as of Prisma's driver-adapter rollout, not specific to this
+  project). `README.md`'s deployment section says to try the direct
+  path first and documents a fallback (`turso db shell < migration.sql`
+  per migration) rather than asserting either way with false
+  confidence.
+- `src/app/api/health/route.ts` (new): runs `prisma.$queryRaw\`SELECT
+  1\`` (a real connectivity check, not a hardcoded 200) and reads
+  `agentSockets.size`/`dashboardSockets.size` directly from
+  `src/lib/wsRegistry.ts` — genuinely live in-process state, the same
+  registry `terminateEmployeeSessions()` already reads/writes, not a
+  new parallel bookkeeping mechanism. 200 when the DB check passes, 503
+  otherwise. Added `/api/health` to `src/proxy.ts`'s `PUBLIC_PATHS` —
+  otherwise a container healthcheck (which can't present a dashboard
+  session cookie) would always get a 401 and the container would be
+  killed as unhealthy. Verified locally via `npm run dev` +
+  `curl localhost:3000/api/health` → 200 with real `db`/`ws` fields.
+- `package.json`: moved `@prisma/client`, `@prisma/adapter-better-sqlite3`,
+  and `tsx` from `devDependencies` to `dependencies` — all three are
+  imported directly by runtime code (`src/lib/prisma.ts`, `server.ts`),
+  and the SQLite Data Persistence phase's own WORKLOG entry already
+  flagged this as something that "would break under any `--omit=dev`
+  production install" without fixing it (the instruction at the time
+  was explicit about dev-dependency placement). Phase 7 is the point
+  where that flag stops being theoretical, so fixed it now rather than
+  re-flagging it a third time. Added `"start:prod": "tsx server.ts"`
+  (kept `"start": "next start"` unchanged — still intentionally not
+  wired to the custom WS server, per the existing Phase 3 note; adding
+  a new script rather than repurposing the conventional one). Ran a
+  plain `npm install` afterward to reconcile `package-lock.json`'s
+  per-package dev/prod flags (560-line diff, no new packages — same
+  tree, corrected classification).
+- `Dockerfile` (new, multi-stage): `builder` (`node:22-bookworm-slim` +
+  `python3 make g++ openssl` for better-sqlite3/sharp's native builds +
+  Prisma's engine linking) runs `npm ci` then `npm run build`; `runner`
+  (clean `node:22-bookworm-slim`, no compiler) copies the built
+  `node_modules`/`.next`/`public`/`prisma`/`src`/`server.ts`/config files
+  over and runs `node_modules/.bin/tsx server.ts` directly (exec form —
+  not `npm run start:prod`, so `SIGTERM` from the platform reaches the
+  actual process instead of an intermediate `npm` process that may not
+  forward it). Deliberately does *not* prune devDependencies from the
+  copied `node_modules`: `tsx` needs the TypeScript toolchain present at
+  runtime (it compiles `server.ts` on the fly, unlike a pre-compiled JS
+  server), and `prisma.config.ts` — needed if you exec into the running
+  container to run `prisma migrate deploy` against production — imports
+  `dotenv`, itself a devDependency. Added a Docker `HEALTHCHECK` calling
+  Node's built-in global `fetch` against `/api/health` (Node 22 doesn't
+  need `curl` installed just for this, keeping the runner image
+  smaller). **Never run through `docker build`/`docker run`** — flagged
+  prominently in the file's own header comment, in `PLAN.md`, and in
+  `README.md`, rather than presented as tested.
+- `.dockerignore` (new): excludes `node_modules`/`.next`/`.git`, local-only
+  db files (`dev.db`, `e2e-test.db`, and their `-wal`/`-shm`/`-journal`
+  companions), `.env` (keeps `.env.example`), `src/generated` (Prisma
+  regenerates it fresh inside the image via `npm ci`'s `postinstall`),
+  and `tests/`/`playwright.config.ts` (not needed in the runtime image —
+  confirmed `next build`'s TypeScript pass, which globs `**/*.ts`
+  broadly, doesn't care that these are simply absent from the build
+  context).
+- `render.yaml` (new): before writing it, used WebFetch against Render's
+  own current blueprint-spec docs rather than assuming schema details
+  from training data — confirmed `runtime: docker` is the current field
+  name (`env: docker` is the older, now-discouraged form), `plan: free`,
+  `healthCheckPath`, and the `generateValue`/`sync: false` envVar
+  shapes. Defines one Docker web service on the free plan with
+  `healthCheckPath: /api/health`; `ORG_ACCESS_KEY`/`BEARER_TOKEN`/
+  `SESSION_SECRET` auto-generated by Render (`generateValue: true`),
+  `DATABASE_URL`/`TURSO_AUTH_TOKEN` prompted for once (`sync: false`,
+  since they come from an external Turso account Render has no way to
+  generate).
+- `README.md`: fully rewritten from the default create-next-app
+  template (which was still in place — this project never had real
+  setup docs until now) — local dev quickstart, `npm run test:e2e`, and
+  a step-by-step Render + Turso deployment guide (Turso CLI install/
+  account/db-create/token-create, schema application with the migrate-
+  deploy-vs-turso-shell-fallback caveat from above, Render blueprint vs.
+  manual service creation, the full env var reference table, a
+  post-deploy step reminding to update the Chrome extension's
+  `wsEndpoint`/`orgAccessKey` to point at the deployed URL, and a "known
+  limitations" section stating plainly what was/wasn't verified and why
+  Vercel isn't a supported target here). `.env.example` gained
+  `TURSO_AUTH_TOKEN` with a comment explaining when it's required.
+- Verified after all changes: `npm run build` (TypeScript check
+  included, `/api/health` appears correctly as `ƒ` dynamic), `npm run
+  lint`, and `npm run test:e2e` (5/5, exercising the unchanged local
+  `file:`/better-sqlite3 adapter path end-to-end) all still pass.
+- Not done (explicitly out of scope / genuinely unverifiable here, not
+  silently skipped): no actual `docker build`, no real Turso database to
+  migrate/seed against, no CI workflow to automate any of this. All
+  three are called out as open items in `PLAN.md`'s Phase 7 section
+  rather than marked complete.
+
+**Status: Phase 7 — Production Readiness & Deployment Configuration is configuration-ready, not "verified in production."** Every piece that could be checked locally (build, lint, e2e against the local adapter path, the health endpoint) passes. The Docker build and the Turso migration path need a real Docker daemon and Turso account to confirm, neither of which exist in this environment — see the flags above before a first real deploy.
