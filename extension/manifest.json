@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Insider-Shield",
   "version": "0.5.0",
-  "description": "Insider-Shield enterprise endpoint agent — managed-policy DLP monitoring, real-time telemetry, per-device provisioning tokens, and per-employee session revocation.",
+  "description": "Insider-Shield enterprise endpoint agent — DLP monitoring, real-time telemetry, and remote policy enforcement.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -31,7 +31,6 @@
   "options_page": "options/options.html",
   "permissions": [
     "storage",
-    "activeTab",
     "clipboardRead",
     "alarms"
   ]
