@@ -28,7 +28,11 @@ export default async function ProvisioningPage() {
         riskScore={Math.round(riskAvg._avg.riskScore ?? 0)}
       />
       <div className="flex flex-col gap-6 p-6">
-        <ProvisioningWorkspace initialTokens={tokens} employees={employees} />
+        <ProvisioningWorkspace
+          initialTokens={tokens}
+          employees={employees}
+          extensionInstallUrl={process.env.EXTENSION_INSTALL_URL || null}
+        />
       </div>
     </div>
   );
