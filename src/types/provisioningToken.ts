@@ -29,6 +29,12 @@ export interface NewProvisioningToken {
   status: "active";
   createdAt: string;
   expiresAt: string | null;
+  // The WS endpoint this same server answers on (ws(s)://host/api/ws),
+  // derived from the request that generated the token — whichever
+  // dashboard instance (local dev or a real deployment) an admin
+  // generates a token from is the one the resulting device should
+  // point at, so this is never guessed or hardcoded.
+  wsUrl: string;
 }
 
 // Minimal employee shape the token generator's employee picker needs —

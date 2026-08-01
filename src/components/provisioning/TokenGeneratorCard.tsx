@@ -31,6 +31,7 @@ export function TokenGeneratorCard({ employees, onGenerated }: TokenGeneratorCar
   const [issued, setIssued] = useState<NewProvisioningToken | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [urlCopied, setUrlCopied] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   async function handleGenerate() {
@@ -40,6 +41,7 @@ export function TokenGeneratorCard({ employees, onGenerated }: TokenGeneratorCar
     setQrDataUrl(null);
     setRevealed(false);
     setCopied(false);
+    setUrlCopied(false);
 
     try {
       const res = await fetch("/api/admin/provision-token", {
@@ -80,7 +82,7 @@ export function TokenGeneratorCard({ employees, onGenerated }: TokenGeneratorCar
       // functioning auto-provisioning channel.
       const qrPayload = JSON.stringify({
         orgAccessKey: newToken.token,
-        wsEndpoint: "wss://<your-deployment>/api/ws",
+        wsEndpoint: newToken.wsUrl,
       });
       QRCode.toDataURL(qrPayload, { width: 160, margin: 1 })
         .then(setQrDataUrl)
@@ -97,6 +99,13 @@ export function TokenGeneratorCard({ employees, onGenerated }: TokenGeneratorCar
     await navigator.clipboard.writeText(issued.token);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleCopyUrl() {
+    if (!issued) return;
+    await navigator.clipboard.writeText(issued.wsUrl);
+    setUrlCopied(true);
+    setTimeout(() => setUrlCopied(false), 2000);
   }
 
   return (
@@ -188,6 +197,23 @@ export function TokenGeneratorCard({ employees, onGenerated }: TokenGeneratorCar
                 {copied ? "Copied" : "Copy"}
               </button>
             </div>
+
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-slate-500">Server URL:</span>
+              <code className="rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">{issued.wsUrl}</code>
+              <button
+                type="button"
+                onClick={handleCopyUrl}
+                className="flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                {urlCopied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                {urlCopied ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] text-slate-600">
+              Paste this into the extension&apos;s options page &quot;Server URL&quot; field — only needed if the
+              device isn&apos;t using the default <code>ws://localhost:3000/api/ws</code>.
+            </p>
           </div>
 
           {qrDataUrl && (

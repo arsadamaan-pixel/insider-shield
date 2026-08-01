@@ -18,6 +18,23 @@ interface CreateTokenBody {
   expirationDays?: unknown;
 }
 
+// Derives the WS endpoint this same server answers on from the request
+// itself (same host the admin's browser is actually talking to,
+// whether that's localhost:3000 in dev or a real deployment) — mirrors
+// src/lib/useWebSocket.ts's client-side
+// `${protocol}//${host}/api/ws` construction, just built from the
+// server side of the same request instead of `window.location`.
+// x-forwarded-proto is trusted the same way getClientIp() already
+// trusts x-forwarded-for (src/lib/auth.ts) — both assume a normal
+// reverse-proxy deployment (Render, etc.), not a hostile intermediary.
+function resolveWsUrl(request: Request): string {
+  const url = new URL(request.url);
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  const isSecure = (forwardedProto ?? url.protocol.replace(":", "")) === "https";
+  const host = request.headers.get("host") ?? url.host;
+  return `${isSecure ? "wss" : "ws"}://${host}/api/ws`;
+}
+
 export async function POST(request: Request) {
   const authError = requireDashboardSession(request);
   if (authError) return authError;
@@ -80,6 +97,7 @@ export async function POST(request: Request) {
       status: "active",
       createdAt: token.createdAt.toISOString(),
       expiresAt: token.expiresAt ? token.expiresAt.toISOString() : null,
+      wsUrl: resolveWsUrl(request),
     },
     { status: 201 }
   );
