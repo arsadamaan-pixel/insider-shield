@@ -8,9 +8,13 @@ import { hasValidDashboardSession } from "@/lib/auth";
 // usage is safe here.
 //
 // Gates the entire dashboard (every page + every remaining /api/*
-// route) behind the BEARER_TOKEN-derived session cookie. Exclusions:
-// /login and /api/auth/login (the credential-entry surface itself),
-// /api/telemetry (agent traffic, gated by ORG_ACCESS_KEY instead inside
+// route) behind the session cookie, regardless of which login method
+// produced it (shared token or Google Sign-In). Exclusions:
+// /login, /api/auth/login, and /api/auth/google/{login,callback} (the
+// credential-entry surface itself — the Google routes obviously can't
+// require a session cookie to reach them, since reaching them is how
+// one gets issued), /api/telemetry (agent traffic, gated by
+// ORG_ACCESS_KEY instead inside
 // that route — a blanket dashboard-session check here would incorrectly
 // reject legitimate agent requests), and /api/health (Phase 7 — a
 // container platform's healthcheck, e.g. Render or `docker
@@ -23,7 +27,13 @@ import { hasValidDashboardSession } from "@/lib/auth";
 // regardless of the matcher — server.ts's own checks are the sole gate
 // for that surface, not defense-in-depth on top of this file.
 
-const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/health"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/api/auth/login",
+  "/api/auth/google/login",
+  "/api/auth/google/callback",
+  "/api/health",
+];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
