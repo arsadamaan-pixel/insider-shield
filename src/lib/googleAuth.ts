@@ -31,19 +31,24 @@ export function isGoogleAuthConfigured(): boolean {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 }
 
-// Derived from the request itself (same trust model getClientIp() in
-// src/lib/auth.ts already uses for x-forwarded-for) so the same code
-// works for localhost dev and any real deployment domain without
-// hardcoding one. This only avoids a hardcoded string in source — the
-// resulting URL still has to be registered as an Authorized Redirect
-// URI in that org's own Google Cloud OAuth Client, a manual step Google
-// requires and this code can't skip.
-export function resolveRedirectUri(request: Request): string {
+// Derived from the request's own Host header (same trust model
+// getClientIp() in src/lib/auth.ts already uses for x-forwarded-for),
+// deliberately NOT from `new URL(request.url).origin` — behind Render's
+// proxy (and reverse proxies generally), request.url reflects the
+// internal address the platform forwards to (e.g. http://localhost:10000),
+// not the public-facing domain. Confirmed directly against production:
+// before this fix, the post-login redirect sent users to
+// https://localhost:10000/..., unreachable from their own browser.
+export function resolveOrigin(request: Request): string {
   const url = new URL(request.url);
   const forwardedProto = request.headers.get("x-forwarded-proto");
   const isSecure = (forwardedProto ?? url.protocol.replace(":", "")) === "https";
   const host = request.headers.get("host") ?? url.host;
-  return `${isSecure ? "https" : "http"}://${host}/api/auth/google/callback`;
+  return `${isSecure ? "https" : "http"}://${host}`;
+}
+
+export function resolveRedirectUri(request: Request): string {
+  return `${resolveOrigin(request)}/api/auth/google/callback`;
 }
 
 export function generateOAuthState(): string {

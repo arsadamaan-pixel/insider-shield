@@ -6,6 +6,7 @@ import {
   exchangeCodeForIdToken,
   isEmailAllowed,
   isGoogleAuthConfigured,
+  resolveOrigin,
   resolveRedirectUri,
   verifyGoogleIdToken,
 } from "@/lib/googleAuth";
@@ -34,6 +35,7 @@ function loginFailedRedirect(origin: string, code: string): NextResponse {
 // attribution all keep working with zero changes downstream.
 export async function GET(request: Request) {
   const url = new URL(request.url);
+  const origin = resolveOrigin(request);
   const ip = getClientIp(request);
 
   const cookieStore = await cookies();
@@ -43,11 +45,11 @@ export async function GET(request: Request) {
   cookieStore.delete(OAUTH_NEXT_COOKIE);
 
   if (!isGoogleAuthConfigured()) {
-    return loginFailedRedirect(url.origin, "not_configured");
+    return loginFailedRedirect(origin, "not_configured");
   }
 
   if (isLoginRateLimited(ip)) {
-    return loginFailedRedirect(url.origin, "rate_limited");
+    return loginFailedRedirect(origin, "rate_limited");
   }
 
   const code = url.searchParams.get("code");
@@ -62,7 +64,7 @@ export async function GET(request: Request) {
       details: { method: "google", reason: "invalid_or_missing_state" },
       ipAddress: ip,
     });
-    return loginFailedRedirect(url.origin, "oauth_failed");
+    return loginFailedRedirect(origin, "oauth_failed");
   }
 
   const redirectUri = resolveRedirectUri(request);
@@ -78,7 +80,7 @@ export async function GET(request: Request) {
       details: { method: "google", reason: "token_exchange_or_verification_failed" },
       ipAddress: ip,
     });
-    return loginFailedRedirect(url.origin, "oauth_failed");
+    return loginFailedRedirect(origin, "oauth_failed");
   }
 
   if (!isEmailAllowed(identity.email, identity.hd)) {
@@ -90,7 +92,7 @@ export async function GET(request: Request) {
       details: { method: "google", reason: "email_not_allowed" },
       ipAddress: ip,
     });
-    return loginFailedRedirect(url.origin, "not_allowed");
+    return loginFailedRedirect(origin, "not_allowed");
   }
 
   clearFailedLoginAttempts(ip);
@@ -111,5 +113,5 @@ export async function GET(request: Request) {
     ipAddress: ip,
   });
 
-  return NextResponse.redirect(new URL(next, url.origin));
+  return NextResponse.redirect(new URL(next, origin));
 }
