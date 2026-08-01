@@ -16,10 +16,12 @@ import { hasValidDashboardSession } from "@/lib/auth";
 // one gets issued), /api/telemetry (agent traffic, gated by
 // ORG_ACCESS_KEY instead inside
 // that route — a blanket dashboard-session check here would incorrectly
-// reject legitimate agent requests), and /api/health (Phase 7 — a
+// reject legitimate agent requests), /api/health (Phase 7 — a
 // container platform's healthcheck, e.g. Render or `docker
 // HEALTHCHECK`, can't present a session cookie; the route itself
-// reveals only aggregate connection counts, never employee/alert data).
+// reveals only aggregate connection counts, never employee/alert data),
+// and /privacy-policy (must be reachable by Google/Chrome Web Store
+// reviewers with no session at all).
 //
 // /api/ws is not excluded because it doesn't need to be: WebSocket
 // upgrade requests fire Node's 'upgrade' event, never the 'request'
@@ -33,6 +35,7 @@ const PUBLIC_PATHS = [
   "/api/auth/google/login",
   "/api/auth/google/callback",
   "/api/health",
+  "/privacy-policy",
 ];
 
 export function proxy(request: NextRequest) {
