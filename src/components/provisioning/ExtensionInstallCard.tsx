@@ -26,17 +26,20 @@ export function ExtensionInstallCard({ installUrl }: ExtensionInstallCardProps) 
 
       {installUrl ? (
         <>
-          <div className="flex flex-wrap items-center gap-2">
-            <code className="rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-300">{installUrl}</code>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-            >
-              {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? "Copied" : "Copy"}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleCopy}
+            title={installUrl}
+            className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
+          >
+            <Puzzle className="h-4 w-4 text-emerald-400" />
+            {copied ? "Copied!" : "Copy Extension Link"}
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="h-3.5 w-3.5 text-slate-500" />
+            )}
+          </button>
           <p className="mt-2 text-[10px] text-slate-600">
             Send this to an employee to install the extension, then have them paste the token above into its options
             page. Same link works for every device — the extension asks for its own server URL and token, so it
