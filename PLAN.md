@@ -573,12 +573,145 @@ before a first real deploy.
   just environment catch-up; noted here since it cost real debugging
   time and will recur on any machine that only ever `git pull`s.
 
+### Phase 10 — Dashboard Accountability: Google Sign-In & IAM Users Lifecycle — ✅ COMPLETE
+- [x] **Config-driven Google Sign-In, not hardcoded to one person.**
+      New `src/lib/googleAuth.ts` (authorization-code flow, ID token
+      verified via Google's `tokeninfo` endpoint rather than hand-
+      rolled JWKS/RS256 verification — a documented, dependency-light
+      pattern), `src/app/api/auth/google/{login,callback}/route.ts`.
+      Access is restricted per-deployment via `ALLOWED_DASHBOARD_EMAILS`
+      (comma-separated exact addresses) and/or `ALLOWED_GOOGLE_HD`
+      (comma-separated Workspace domains) — every org self-hosting this
+      project sets its own. **Fails closed**: if `GOOGLE_CLIENT_ID`/
+      `SECRET` are set but neither restriction is, every login is
+      rejected rather than silently allowing any Google account,
+      mirroring `verifySessionToken()`'s existing fail-closed pattern
+      for a missing `SESSION_SECRET`. A verified Google email flows
+      into the *same* `operator` slot on the session cookie a
+      self-reported token-login string used to occupy
+      (`createDashboardSessionCookieValue(email)`, unchanged), so
+      `proxy.ts`, the WS-upgrade auth check, and audit-log attribution
+      all work with zero downstream changes. Reframed explicitly around
+      this project's public/multi-tenant release: "any small company
+      takes my application and runs it in their own organization" —
+      nothing about login should be tied to one person's account.
+- [x] **Real production bug, self-caught during live verification (not
+      reported by the user):** on Render, `new URL(request.url).origin`
+      resolves to the platform's internal proxy address
+      (`http://localhost:10000`), not the public domain — post-login
+      redirects sent users to an unreachable `https://localhost:10000/...`.
+      Confirmed via `curl` showing the bad `location` header. Fixed with
+      a shared `resolveOrigin()` helper that trusts the `Host` header
+      instead (same trust model `getClientIp()` already uses for
+      `x-forwarded-for`), applied everywhere `callback/route.ts` used to
+      call `url.origin` directly. Verified via a full live Google login
+      round-trip on both `localhost` and production afterward.
+- [x] **IAM Users: Add / Edit / permanent Delete.** New
+      `AddEmployeeModal.tsx`, `EditEmployeeModal.tsx`,
+      `DeleteEmployeeModal.tsx` plus
+      `POST /api/employees`, `/api/employees/[id]/update`,
+      `/api/employees/[id]/delete` — the Users page had no lifecycle
+      management at all before this (read-only table).
+- [x] **Verified live in production** with the user's own real Google
+      account, not just locally.
+
+### Phase 11 — Chrome Web Store Distribution (Endpoint Agent) — 🔄 IN PROGRESS (pending Google review)
+- [x] **Distribution method decided by elimination.** Raw
+      download+sideload is blocked by Chrome for non-Web-Store CRX
+      files; git-clone+Load-Unpacked has no auto-update and doesn't
+      scale past a handful of devices; Chrome Enterprise forced-install
+      needs `chrome.storage.managed`/`managed_schema` infra this project
+      doesn't have yet. Landed on **Chrome Web Store, "Unlisted"
+      visibility** — installable by anyone with the link (so any
+      self-hosting org's admin can share it with their own employees),
+      not surfaced in public search.
+- [x] **Manifest fixes required before upload would even validate:**
+      `description` shortened from 163 to 110 chars (Chrome's hard
+      132-char limit); unused `activeTab` permission removed from
+      `permissions` after grepping the whole `extension/` tree for
+      `activeTab`/`chrome.tabs` and finding zero uses — Chrome
+      explicitly rejects unused-permission requests during review.
+- [x] **Store listing filled in with justifications grounded in the
+      actual code**, not boilerplate: single-purpose description,
+      per-permission justification (`storage`, `clipboardRead`,
+      `alarms`, host permission), "not using remote code" declaration,
+      Data usage disclosures (PII/location/user-activity checked to
+      match what the extension actually sends) plus all three required
+      certifications.
+- [x] **Privacy-exposing screenshot caught by the user, not by me** —
+      the first uploaded screenshot (`/endpoints`) showed the user's
+      real personal email as a connected agent. Fixed by replacing it
+      with a `/policies` screenshot, verified PII-free via
+      `document.body.innerText` before upload.
+- [x] **Privacy policy hosted on the already-deployed Render app**,
+      not a separate static host. First drafted as `docs/privacy-policy.html`
+      intended for GitHub Pages, but GitHub Pages' free tier requires a
+      public repo (this repo is private) — rather than making the repo
+      public unilaterally, converted the same content into a real page,
+      `src/app/privacy-policy/page.tsx`, and added `/privacy-policy` to
+      `PUBLIC_PATHS` in `src/proxy.ts` (must stay reachable with **no**
+      session cookie — Chrome/Google reviewers can't authenticate).
+      `docs/privacy-policy.html` deleted once the Next.js page was live.
+      Verified via `curl` (200, no cookie) both locally and against
+      `https://insider-shield.onrender.com/privacy-policy`.
+- [x] **Publisher-account blockers cleared**: Privacy Policy URL field
+      set to the live Render page; Distribution visibility set to
+      Unlisted; publisher account's contact email
+      (`yesarsad7@gmail.com`, publicly displayed per Chrome's rules)
+      added and verified — this was the last blocker keeping "Submit
+      for review" disabled.
+- [x] **Architecture correction, self-caught by reading the actual
+      code**: initially told the user another company would need its
+      *own* separate Chrome Web Store listing to self-host this
+      project. Wrong — `extension/options/options.html` already exposes
+      Server URL, Org Access Key, and Employee Email as fields any
+      installer fills in themselves (defaults to
+      `ws://localhost:3000/api/ws` if blank, nothing hardcoded at
+      package-build time). So **one published extension is reusable by
+      every self-hosting org** — they just point it at their own
+      deployment via the options page. Same pattern as Bitwarden's
+      official browser extension talking to a self-hosted server.
+      Corrected after grepping `background.js`/`options.html` rather
+      than assuming.
+- [x] **"Endpoint Agent Install Link" card on Agent Provisioning page**
+      (`src/components/provisioning/ExtensionInstallCard.tsx`), driven
+      by an optional `EXTENSION_INSTALL_URL` env var (per-deployment,
+      same pattern as `GOOGLE_CLIENT_ID` etc. — not hardcoded) so an
+      admin can copy the install link straight from the dashboard
+      instead of tracking it separately. Redesigned per user feedback
+      from a URL-text-field-plus-button into a single icon button
+      (click to copy, flips to "Copied!") — the raw URL text wasn't
+      useful to show inline.
+- [x] **Submitted for review.** Two confirmation dialogs, not one — the
+      first attempt only clicked through "Submit ‘Insider-Shield’ for
+      review?" and silently did nothing, because a second dialog,
+      "Publishing will be delayed" (a non-blocking warning about the
+      `<all_urls>` content-script host permission, already justified in
+      the Privacy tab), also has to be confirmed. Caught by checking the
+      Status page's actual tab state after the first attempt still read
+      "Draft" / "This draft is unpublished." — not by trusting the
+      click succeeded. Second attempt confirmed both dialogs; Status
+      page now correctly reads **"Pending review"**.
+- [ ] Waiting on Google's review (their own estimate: up to several
+      weeks). "Publish automatically after passing review" is checked,
+      so no further manual step is needed once approved.
+- [ ] Once approved: set the real Chrome Web Store item URL as
+      `EXTENSION_INSTALL_URL` in Render's environment (not committed to
+      git — deployment-specific, same as every other env var here).
+
 ## Active Milestone
 
-**Phase 9 — Endpoints Lifecycle, Real GeoIP & Live Sync** is complete
-as of 2026-07-31. Real GeoIP is wired end-to-end but inactive until a
-`GEOIP_DB_PATH` is actually configured (requires a free MaxMind
-account/license key — an external step, not something to automate).
-Phase 7 remains "configuration-ready" (Docker build and Turso migration
-path still unverified pending a real Docker daemon/Turso account).
-Phase 5's legal/compliance review is the only other item still open.
+**Phase 11 — Chrome Web Store Distribution** is the active item as of
+2026-08-01: the extension is submitted and shows **Status: Pending
+review** in the developer console; nothing further to do here until
+Google responds. Phases 1–10 are complete. Real GeoIP (Phase 9) is
+wired end-to-end but inactive until a `GEOIP_DB_PATH` is actually
+configured (requires a free MaxMind account/license key — an external
+step, not something to automate). Phase 7 remains "configuration-ready"
+(Docker build and Turso migration path still unverified pending a real
+Docker daemon/Turso account). Phase 5's legal/compliance review is the
+only other item still open. Separately: this GitHub repo is currently
+**private** — CLAUDE.md's own framing of the project as "open-source"
+is aspirational until/unless the user explicitly decides to flip repo
+visibility to public (deferred, not yet decided; not something to do
+unilaterally).

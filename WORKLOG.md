@@ -1725,3 +1725,205 @@ something to script.
 
 **Status: Phase 9 complete, `tsc --noEmit` and `npm run lint` clean.
 Not yet committed — pending user review.**
+
+## 2026-08-01 — Agent Provisioning: server URL shown automatically
+
+Small follow-up before the bigger Phase 10 work: the user asked whether
+the WS server URL could be shown next to a freshly generated agent
+token instead of admins needing to know/type it separately. Added a
+`resolveWsUrl()` helper to `POST /api/admin/provision-token` (derives
+`wss://<host>/api/ws` from the request's own `Host`/`x-forwarded-proto`
+headers, the same trust model used elsewhere) and surfaced it in
+`TokenGeneratorCard.tsx` with its own copy button, alongside the
+existing token QR code. Commit `dbe151d`.
+
+## 2026-08-01 — IAM Users: Add / Edit / permanent Delete
+
+The Users page had a read-only employee table with no lifecycle
+management at all — the user asked for this directly. Added
+`POST /api/employees` (create), `POST /api/employees/[id]/update`,
+`POST /api/employees/[id]/delete` (hard delete, not a status flag) plus
+three new modals (`AddEmployeeModal.tsx`, `EditEmployeeModal.tsx`,
+`DeleteEmployeeModal.tsx`) wired into `EmployeeTable.tsx`. Mirrors the
+existing `OffboardModal.tsx` confirm-dialog shape rather than inventing
+a new pattern. Commit `18a4091`.
+
+## 2026-08-01 — Dashboard Login: Google Sign-In (config-driven, per-deployment)
+
+The user pointed out a real accountability gap: dashboard login was a
+single shared `BEARER_TOKEN` plus a free-text, self-reported "operator"
+name — anyone with the token could log in as anyone, so there was no
+real way to know who actually did what. Went through a full plan-mode
+cycle (`EnterPlanMode`) rather than jumping straight to code, because
+the fix couldn't just be "hardcode yesarsad7@gmail.com as the only
+allowed login" — the user explicitly reframed the whole project around
+public/multi-tenant release ("any small company takes my application
+and runs it in their own organization"), so every design decision here
+had to be something each self-hosting org configures for *itself*.
+
+**What was built:** `src/lib/googleAuth.ts` (authorization-code OAuth
+flow; ID token verified via Google's `tokeninfo` endpoint — one extra
+`fetch`, checking `aud` against `GOOGLE_CLIENT_ID` and
+`email_verified` — rather than hand-verifying the RS256 JWT against
+Google's rotating JWKS, a documented pattern that avoids a JWT/JWKS
+dependency for something Google already validates; no PKCE, since this
+is a confidential server-side client holding `GOOGLE_CLIENT_SECRET`,
+exactly the case PKCE isn't needed for — CSRF handled by a short-lived
+`state` cookie instead); `src/app/api/auth/google/login/route.ts` and
+`.../callback/route.ts`. Access restriction is **two knobs, either or
+both**: `ALLOWED_DASHBOARD_EMAILS` (comma-separated exact addresses —
+for a team without Google Workspace) and/or `ALLOWED_GOOGLE_HD`
+(comma-separated Workspace domains — no per-person list to maintain for
+orgs that have one). **Fails closed**: Google credentials present but
+both restrictions empty means every login attempt is rejected with a
+clear error, not silently open to any Google account — mirrors
+`verifySessionToken()`'s existing behavior when `SESSION_SECRET` is
+missing. Once verified, the Google email is handed to the *existing,
+unmodified* `createDashboardSessionCookieValue(email)` — the same
+`operator` slot a self-reported token-login string used to occupy, so
+`proxy.ts`, the WS-upgrade auth check in `server.ts`, and audit-log
+attribution all kept working with zero downstream changes. Once an org
+configures Google Sign-In, the old shared-token form disappears from
+`/login` entirely for that deployment (confirmed with the user first —
+a verified identity sitting next to a standing shared secret would
+undermine the entire point). An org that never sets the Google env vars
+keeps today's token-only login, unchanged, so self-hosting/evaluating
+the project still needs zero OAuth setup.
+
+**A real production bug, caught by me while testing the live flow, not
+reported by the user:** on Render, `new URL(request.url).origin`
+resolves to the platform's internal proxy address
+(`http://localhost:10000`), not the public domain — confirmed via
+`curl` showing the callback route's redirect `location` header pointing
+at that unreachable internal address. Root-caused to reverse-proxy
+behavior generally (not Render-specific), fixed with a shared
+`resolveOrigin()` helper that derives the origin from the trusted
+`Host` header instead (same trust model `getClientIp()` already uses
+for `x-forwarded-for`), applied everywhere `callback/route.ts` had been
+using `url.origin` directly. Commit `f1c2a4b`, immediately after
+`912d969`.
+
+**Verified live in production** with the user's own real Google
+account: successful login lands on `/` with a valid session, the audit
+trail shows the real Gmail address (not a self-reported string);
+signing in with a non-allow-listed Google account is cleanly rejected
+(`/login?error=not_allowed`) with a matching `login_failed` audit row;
+a tampered/missing OAuth `state` param is rejected rather than silently
+accepted; with Google configured but neither restriction set, every
+login attempt is rejected (the fail-closed case).
+
+## 2026-08-01 — Chrome Web Store: publishing the endpoint agent
+
+The user asked how employees actually get the extension onto their
+machines — worked through the options with them: raw download+sideload
+is blocked by Chrome for anything not distributed via the Web Store;
+git-clone+Load-Unpacked (today's dev workflow) has no auto-update and
+doesn't scale past a handful of test devices; Chrome Enterprise
+forced-install needs `chrome.storage.managed`/`managed_schema` infra
+this project doesn't have yet (a known gap, see `CLAUDE.md`). Landed on
+**Chrome Web Store, "Unlisted" visibility** — installable by anyone
+with the link, not surfaced in public search, which fits a B2B tool
+distributed org-to-employee rather than discovered by random users. The
+user paid the $5 one-time Chrome Web Store developer fee under a
+separate Google account (`yesarsad7@gmail.com`) and asked me to
+actually publish it — done live via Playwright browser automation
+against the real Chrome Web Store Developer Dashboard, not a dry run.
+
+**Two real issues the manifest had that would have caused outright
+rejection, not just polish:** `description` was 163 characters against
+Chrome's hard 132-character limit — shortened to 110. `activeTab` was
+declared in `permissions` but never used anywhere — confirmed by
+grepping the whole `extension/` tree for `activeTab`/`chrome.tabs` and
+finding zero matches — removed, since Chrome's review explicitly
+checks for and rejects unused-permission requests. Both required
+re-zipping and re-uploading the package. Commit `7af22b9` (bundled with
+the privacy policy work below).
+
+**The Privacy tab was filled in with justifications grounded in what
+the code actually does**, not templated boilerplate — one paragraph
+each for `storage`, `clipboardRead`, `alarms`, and the `<all_urls>`
+host permission, a single-purpose description, "not using remote code,"
+the three required Data usage certifications, and the specific data
+categories the extension actually collects (PII, location/IP,
+user-activity — not health, financial, or web-history data, since it
+genuinely doesn't touch those).
+
+**A privacy issue the user caught, not me:** the first uploaded
+screenshot (of `/endpoints`) showed the user's real personal email
+address as a connected agent's identity. Fixed immediately — removed
+that screenshot, replaced it with one of `/policies`, verified
+PII-free via `document.body.innerText` in the browser console *before*
+uploading it.
+
+**Privacy Policy hosting went through a real design pivot.** First
+drafted as a standalone `docs/privacy-policy.html`, intending to host
+it on GitHub Pages — blocked because GitHub Pages' free tier requires a
+public repo and this repo is private (making the repo public was
+surfaced as an explicit decision to the user, not made unilaterally;
+still undecided). The user pointed out Render is already deployed and
+running, so introducing a *second* hosting service for one static page
+made no sense — converted the same verified content into a real
+`src/app/privacy-policy/page.tsx` page instead, added `/privacy-policy`
+to `PUBLIC_PATHS` in `src/proxy.ts` (has to stay reachable with **no**
+session cookie at all — Google/Chrome Web Store reviewers can't
+authenticate), deleted the now-redundant `docs/privacy-policy.html`.
+Verified via `curl` (200, no cookie required) both against the local
+dev server and `https://insider-shield.onrender.com/privacy-policy`
+after Render's auto-deploy picked up the push. Commits `2a05751`.
+
+**Clearing the publisher-account blockers**, also done live via
+Playwright against the real Developer Dashboard: set the Privacy Policy
+URL field to the live Render page; set Distribution visibility to
+Unlisted; the account's public contact email (`yesarsad7@gmail.com` —
+the user's own choice, asked via `AskUserQuestion` rather than assumed,
+since this address is publicly displayed on the listing) was added and
+had to be verified through an email Google sent directly to that
+inbox — not something automatable, the user confirmed verification
+themselves.
+
+**A real architecture question I got wrong the first time, then
+corrected by reading the code instead of assuming:** the user asked
+whether other companies could use *this* published Chrome Web Store
+listing, or whether each self-hosting org would need its own separate
+listing. I initially said each org would need its own. Wrong —
+`extension/options/options.html` already exposes Server URL, Org
+Access Key, and Employee Email as fields any installer fills in
+themselves (defaults to `ws://localhost:3000/api/ws` if left blank,
+nothing about the target server is baked in at package-build time). So
+**one published extension is reusable by every self-hosting org** —
+install from the same link, then point it at your own deployment via
+the options page, the same pattern Bitwarden's official browser
+extension uses against self-hosted servers. Caught and corrected by
+grepping `background.js`/`options.html` rather than trusting my first
+answer.
+
+**"Endpoint Agent Install Link" card added to Agent Provisioning**
+(`src/components/provisioning/ExtensionInstallCard.tsx`), driven by an
+optional `EXTENSION_INSTALL_URL` env var — per-deployment, same pattern
+as `GOOGLE_CLIENT_ID` etc., left unset it just explains how to get a
+link instead of hiding entirely. First version showed the raw URL in a
+`<code>` field next to a separate copy button; redesigned per direct
+user feedback into a single icon button (extension/puzzle icon, click
+to copy, flips to "Copied!" — no full URL text shown inline, since it
+wasn't actually useful there). Verified both states (configured /
+unconfigured) live against the local dev server via Playwright,
+including clicking the button and confirming the copied-state flip.
+Commits `4558f36`, `8cc796c`.
+
+**Submission itself needed two confirmation dialogs, not one —
+missed on the first attempt.** Clicking "Submit for review" opens
+"Submit 'Insider-Shield' for review?"; confirming *that* opens a
+second, easy-to-miss dialog, "Publishing will be delayed" (a
+non-blocking warning about the `<all_urls>` content-script host
+permission, already justified in the Privacy tab — DLP detection
+genuinely has to run on any site, not a fixed domain list). The first
+attempt only clicked through the first dialog and silently did nothing
+— confirmed by checking the Status page afterward and finding it still
+read "Draft" / "This draft is unpublished," not by trusting the click
+had worked. Re-ran the full flow and clicked through both dialogs;
+Status page then correctly read **"Pending review."**
+"Publish automatically after passing review" was left checked, so
+nothing further is needed once Google approves it — at which point the
+real Chrome Web Store item URL gets set as `EXTENSION_INSTALL_URL` in
+Render's environment (not committed to git, deployment-specific like
+every other env var here).
