@@ -1755,8 +1755,8 @@ single shared `BEARER_TOKEN` plus a free-text, self-reported "operator"
 name — anyone with the token could log in as anyone, so there was no
 real way to know who actually did what. Went through a full plan-mode
 cycle (`EnterPlanMode`) rather than jumping straight to code, because
-the fix couldn't just be "hardcode yesarsad7@gmail.com as the only
-allowed login" — the user explicitly reframed the whole project around
+the fix couldn't just be "hardcode the developer's own personal email as
+the only allowed login" — the user explicitly reframed the whole project around
 public/multi-tenant release ("any small company takes my application
 and runs it in their own organization"), so every design decision here
 had to be something each self-hosting org configures for *itself*.
