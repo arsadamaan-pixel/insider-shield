@@ -12,6 +12,9 @@ const ACTION_STYLES: Record<string, string> = {
   provisioning_token_revoked: "bg-red-500/15 text-red-400",
   endpoint_deleted: "bg-red-500/15 text-red-400",
   endpoint_renamed: "bg-amber-500/15 text-amber-400",
+  employee_created: "bg-emerald-500/15 text-emerald-400",
+  employee_updated: "bg-amber-500/15 text-amber-400",
+  employee_deleted: "bg-red-500/15 text-red-400",
 };
 
 const DEFAULT_ACTION_STYLE = "bg-slate-700/40 text-slate-300";

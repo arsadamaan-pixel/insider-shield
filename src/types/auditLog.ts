@@ -24,6 +24,9 @@ export const AUDIT_ACTIONS = [
   "provisioning_token_revoked",
   "endpoint_deleted",
   "endpoint_renamed",
+  "employee_created",
+  "employee_updated",
+  "employee_deleted",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
