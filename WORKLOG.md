@@ -1927,3 +1927,72 @@ nothing further is needed once Google approves it — at which point the
 real Chrome Web Store item URL gets set as `EXTENSION_INSTALL_URL` in
 Render's environment (not committed to git, deployment-specific like
 every other env var here).
+
+## 2026-08-01 — GitHub repo made public, full secret audit, private email purged from history
+
+The user asked to make the repo public (matching `CLAUDE.md`'s own
+"open-source" framing, and needed for GitHub Pages / broad
+distribution), conditioned explicitly on a security check first — "make
+sure all security and dont leak anythin passwords." Treated as a real
+gate, not a formality, since making a repo public is effectively
+irreversible (anyone can clone/cache full history within seconds of the
+flip).
+
+**Audit performed before touching visibility** (full history, not just
+current `HEAD`): confirmed via `git log --all --full-history` that
+`.env`, `*.db`, `*.pem`/`*.key` files were never committed at any point;
+searched every commit's full diff (`git log --all -p`) for known secret
+shapes (`GOCSPX-` Google secrets, `AKIA` AWS keys, JWT-shaped
+`eyJ...` tokens, private-key headers, generic
+`password|secret|token=<value>` assignments) — zero matches;
+confirmed `.env.example` contains only empty placeholders;
+confirmed `render.yaml` uses Render's `sync: false`/`generateValue: true`
+secret handling, no literal values. Only made public
+(`gh repo edit --visibility public --accept-visibility-change-consequences`)
+after this came back clean.
+
+**A real leak the audit didn't catch, because it wasn't a "secret" —
+it was PII the user flagged themselves**: the developer's personal
+email, `arsad.amaan@gmail.com`, was live on the (now-public) privacy
+policy page and mentioned in `WORKLOG.md`'s prose. Fixed at `HEAD`
+first (swapped for the intended public contact, `yesarsad7@gmail.com`,
+in `src/app/privacy-policy/page.tsx` and the `WORKLOG.md` line —
+commit `0f2bf18`), but `HEAD`-only wasn't enough: every one of the
+repo's 30 commits also had `arsad.amaan@gmail.com` baked into the
+**author/committer identity** (`git log --all --format="%ae|%ce"`) —
+far more exposed than a page mention, since it's what GitHub shows as
+the author of literally every commit. The user chose the thorough fix
+over leaving it (`AskUserQuestion`: scrub history vs. leave as-is,
+chose scrub).
+
+**History rewrite, done carefully given a force-push to a public repo
+is genuinely hard to reverse:** backed up `.git` in full before
+touching anything; installed `git-filter-repo` (the maintained tool,
+not the deprecated `filter-branch`); two passes — `--replace-text` for
+file content, `--replace-message` for commit/tag messages, `--mailmap`
+for author/committer/tagger identity (three separate mechanisms in
+git-filter-repo; `--replace-text` alone, tried first, silently missed
+the author-identity and commit-message occurrences, caught by
+re-searching afterward instead of trusting the first pass). Set this
+repo's `git config --local user.email/name` to the public address so
+future commits from this machine can't reintroduce the private one.
+Force-pushed the rewritten `main` and the `v1.0.0-production` tag.
+**Verified independently** by fresh-cloning straight from
+`github.com/arsadamaan-pixel/insider-shield` into a scratch directory
+(not trusting local repo state) and re-running the same searches
+against that clone — zero matches across all 30 commits' content,
+messages, and author/committer fields; `gh api
+repos/.../commits/main --jq .sha` confirmed matched the local
+rewritten `HEAD`. Also opportunistically cleaned up
+`.claude/scheduled_tasks.lock`, a machine-specific runtime lock file
+that had been committed once by accident — deleted and gitignored
+(commit `6e0a4ce`).
+
+**Consequence any other clone of this repo needs to know about:**
+every commit hash changed. A plain `git pull` from an older clone (the
+Ubuntu machine that built Phase 7/8 has one) will not cleanly
+fast-forward — it needs `git fetch origin && git reset --hard
+origin/main` instead (safe: only touches git-tracked files, leaves
+gitignored local state like `.env`/`dev.db` untouched), plus
+re-running `git config --local user.email/name` there too, since that
+setting is per-clone, not something `git pull` carries over.
